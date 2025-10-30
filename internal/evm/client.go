@@ -58,6 +58,11 @@ func NewClient(ctx context.Context, wsURL, rpcURL string, logger zerolog.Logger)
 //	}
 //}
 
+// GetRPCURL returns the RPC URL of the client
+func (c *Client) GetRPCURL() string {
+	return c.rpcURL
+}
+
 // HealthCheckRequest performs a lightweight JSON-RPC health check and returns the RTT duration
 func (c *Client) HealthCheckRequest(ctx context.Context) (time.Duration, error) {
 	// Create the JSON-RPC request for eth_blockNumber

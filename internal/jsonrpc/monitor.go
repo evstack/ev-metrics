@@ -24,9 +24,6 @@ func Monitor(
 		Int("scrape_interval_seconds", scrapeInterval).
 		Msg("starting JSON-RPC health monitoring")
 
-	// Initialize SLO threshold gauges once at startup
-	m.InitializeJsonRpcSloThresholds(chainID)
-
 	ticker := time.NewTicker(time.Duration(scrapeInterval) * time.Second)
 	defer ticker.Stop()
 
@@ -57,9 +54,13 @@ func performHealthCheck(
 ) error {
 	duration, err := evmClient.HealthCheckRequest(ctx)
 	if err != nil {
+		// Record endpoint as unreachable
+		m.RecordEndpointAvailability(chainID, evmClient.GetRPCURL(), false)
 		return err
 	}
 
+	// Record endpoint as reachable
+	m.RecordEndpointAvailability(chainID, evmClient.GetRPCURL(), true)
 	m.RecordJsonRpcRequestDuration(chainID, duration)
 
 	logger.Info().

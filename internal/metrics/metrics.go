@@ -30,10 +30,12 @@ type Metrics struct {
 	SubmissionDaHeight *prometheus.GaugeVec
 	// BlockTime tracks the time between consecutive blocks over a rolling window.
 	BlockTime *prometheus.SummaryVec
-	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
+	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node (histogram for detailed buckets).
 	JsonRpcRequestDuration *prometheus.HistogramVec
-	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
-	JsonRpcRequestSloSeconds *prometheus.GaugeVec
+	// JsonRpcRequestDurationSummary tracks JSON-RPC request duration with percentiles over a rolling window.
+	JsonRpcRequestDurationSummary *prometheus.SummaryVec
+	// EndpointAvailability tracks whether an endpoint is reachable (1 = reachable, 0 = unreachable).
+	EndpointAvailability *prometheus.GaugeVec
 
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
@@ -156,13 +158,29 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id"},
 		),
-		JsonRpcRequestSloSeconds: factory.NewGaugeVec(
+		JsonRpcRequestDurationSummary: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "jsonrpc_request_duration_summary_seconds",
+				Help:      "JSON-RPC request duration percentiles over rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05,  // p50 (median) ±5%
+					0.9:  0.01,  // p90 ±1%
+					0.95: 0.01,  // p95 ±1%
+					0.99: 0.001, // p99 ±0.1%
+				},
+				MaxAge:     2 * time.Minute, // rolling window of 2 minutes
+				AgeBuckets: 5,
+			},
+			[]string{"chain_id"},
+		),
+		EndpointAvailability: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
-				Name:      "jsonrpc_request_slo_seconds",
-				Help:      "SLO thresholds for JSON-RPC request duration",
+				Name:      "endpoint_availability",
+				Help:      "endpoint availability status (1 = reachable, 0 = unreachable)",
 			},
-			[]string{"chain_id", "percentile"},
+			[]string{"chain_id", "endpoint"},
 		),
 		ranges:               make(map[string][]*blockRange),
 		lastBlockArrivalTime: make(map[string]time.Time),
@@ -421,13 +439,17 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 
 // RecordJsonRpcRequestDuration records the duration of a JSON-RPC request
 func (m *Metrics) RecordJsonRpcRequestDuration(chainID string, duration time.Duration) {
-	m.JsonRpcRequestDuration.WithLabelValues(chainID).Observe(duration.Seconds())
+	seconds := duration.Seconds()
+	m.JsonRpcRequestDuration.WithLabelValues(chainID).Observe(seconds)
+	m.JsonRpcRequestDurationSummary.WithLabelValues(chainID).Observe(seconds)
 }
 
-// InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges
-func (m *Metrics) InitializeJsonRpcSloThresholds(chainID string) {
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p50").Set(0.2)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p90").Set(0.35)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p95").Set(0.4)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p99").Set(0.5)
+// RecordEndpointAvailability records whether an endpoint is reachable
+// available should be true if endpoint is reachable, false otherwise
+func (m *Metrics) RecordEndpointAvailability(chainID, endpoint string, available bool) {
+	value := 0.0
+	if available {
+		value = 1.0
+	}
+	m.EndpointAvailability.WithLabelValues(chainID, endpoint).Set(value)
 }
