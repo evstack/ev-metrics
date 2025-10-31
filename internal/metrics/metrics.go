@@ -32,6 +32,10 @@ type Metrics struct {
 	BlockTime *prometheus.HistogramVec
 	// BlockTimeSummary tracks block time quantiles over a rolling window.
 	BlockTimeSummary *prometheus.SummaryVec
+	// BlockReceiveDelay tracks the delay between block creation and reception with histogram buckets.
+	BlockReceiveDelay *prometheus.HistogramVec
+	// BlockReceiveDelaySummary tracks block receive delay quantiles over a rolling window.
+	BlockReceiveDelaySummary *prometheus.SummaryVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node (histogram for detailed buckets).
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestDurationSummary tracks JSON-RPC request duration with percentiles over a rolling window.
@@ -171,6 +175,47 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Namespace: namespace,
 				Name:      "block_time_summary_seconds",
 				Help:      "block time quantiles over a rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05,
+					0.9:  0.01,
+					0.95: 0.01,
+					0.99: 0.001,
+				},
+				MaxAge:     60 * time.Second,
+				AgeBuckets: 6,
+			},
+			[]string{"chain_id"},
+		),
+		BlockReceiveDelay: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "block_receive_delay_seconds",
+				Help:      "delay between block creation timestamp and reception time",
+				Buckets: []float64{
+					0.1,   // 100ms
+					0.15,  // 150ms
+					0.2,   // 200ms
+					0.25,  // 250ms
+					0.3,   // 300ms
+					0.35,  // 350ms
+					0.4,   // 400ms
+					0.5,   // 500ms
+					0.75,  // 750ms
+					1.0,   // 1s
+					1.5,   // 1.5s
+					2.0,   // 2s
+					3.0,   // 3s
+					5.0,   // 5s
+					10.0,  // 10s
+				},
+			},
+			[]string{"chain_id"},
+		),
+		BlockReceiveDelaySummary: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "block_receive_delay_summary_seconds",
+				Help:      "block receive delay quantiles over a rolling window",
 				Objectives: map[float64]float64{
 					0.5:  0.05,
 					0.9:  0.01,
@@ -487,4 +532,16 @@ func (m *Metrics) RecordEndpointAvailability(chainID, endpoint string, available
 		value = 1.0
 	}
 	m.EndpointAvailability.WithLabelValues(chainID, endpoint).Set(value)
+}
+
+// RecordBlockReceiveDelay records the delay between block creation and reception
+// blockTimestamp is the block's creation timestamp, receiveTime is when the block was received
+func (m *Metrics) RecordBlockReceiveDelay(chainID string, blockTimestamp, receiveTime time.Time) {
+	delay := receiveTime.Sub(blockTimestamp)
+	// only record positive delays
+	if delay > 0 {
+		seconds := delay.Seconds()
+		m.BlockReceiveDelay.WithLabelValues(chainID).Observe(seconds)
+		m.BlockReceiveDelaySummary.WithLabelValues(chainID).Observe(seconds)
+	}
 }
