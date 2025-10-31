@@ -30,6 +30,8 @@ type Metrics struct {
 	SubmissionDaHeight *prometheus.GaugeVec
 	// BlockTime tracks the time between consecutive blocks with histogram buckets for accurate SLO calculations.
 	BlockTime *prometheus.HistogramVec
+	// BlockTimeSummary tracks block time quantiles over a rolling window.
+	BlockTimeSummary *prometheus.SummaryVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node (histogram for detailed buckets).
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestDurationSummary tracks JSON-RPC request duration with percentiles over a rolling window.
@@ -161,6 +163,22 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 					1.0,   // 1s
 					2.0,   // 2s
 				},
+			},
+			[]string{"chain_id"},
+		),
+		BlockTimeSummary: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "block_time_summary_seconds",
+				Help:      "block time quantiles over a rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05,
+					0.9:  0.01,
+					0.95: 0.01,
+					0.99: 0.001,
+				},
+				MaxAge:     60 * time.Second,
+				AgeBuckets: 6,
 			},
 			[]string{"chain_id"},
 		),
@@ -444,7 +462,9 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 		blockTime := arrivalTime.Sub(lastArrival)
 		// only record positive durations
 		if blockTime > 0 {
-			m.BlockTime.WithLabelValues(chainID).Observe(blockTime.Seconds())
+			seconds := blockTime.Seconds()
+			m.BlockTime.WithLabelValues(chainID).Observe(seconds)
+			m.BlockTimeSummary.WithLabelValues(chainID).Observe(seconds)
 		}
 	}
 
