@@ -28,8 +28,8 @@ type Metrics struct {
 	SubmissionDuration *prometheus.SummaryVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
-	// BlockTime tracks the time between consecutive blocks over a rolling window.
-	BlockTime *prometheus.SummaryVec
+	// BlockTime tracks the time between consecutive blocks with histogram buckets for accurate SLO calculations.
+	BlockTime *prometheus.HistogramVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node (histogram for detailed buckets).
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestDurationSummary tracks JSON-RPC request duration with percentiles over a rolling window.
@@ -134,18 +134,33 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "type"},
 		),
-		BlockTime: factory.NewSummaryVec(
-			prometheus.SummaryOpts{
+		BlockTime: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
 				Namespace: namespace,
 				Name:      "block_time_seconds",
-				Help:      "time between consecutive blocks over rolling window",
-				Objectives: map[float64]float64{
-					0.5:  0.05, // median block time
-					0.9:  0.01, // p90
-					0.99: 0.01, // p99
+				Help:      "time between consecutive blocks with histogram buckets for accurate SLO calculations",
+				Buckets: []float64{
+					0.1,   // 100ms
+					0.15,  // 150ms
+					0.2,   // 200ms
+					0.21,  // 210ms
+					0.22,  // 220ms
+					0.225, // 225ms
+					0.23,  // 230ms
+					0.24,  // 240ms
+					0.25,  // 250ms
+					0.26,  // 260ms
+					0.27,  // 270ms
+					0.275, // 275ms
+					0.28,  // 280ms
+					0.29,  // 290ms
+					0.3,   // 300ms
+					0.35,  // 350ms
+					0.4,   // 400ms
+					0.5,   // 500ms
+					1.0,   // 1s
+					2.0,   // 2s
 				},
-				MaxAge:     5 * time.Minute,
-				AgeBuckets: 5,
 			},
 			[]string{"chain_id"},
 		),
