@@ -42,6 +42,8 @@ type Metrics struct {
 	JsonRpcRequestDurationSummary *prometheus.SummaryVec
 	// EndpointAvailability tracks whether an endpoint is reachable (1 = reachable, 0 = unreachable).
 	EndpointAvailability *prometheus.GaugeVec
+	// EndpointErrors tracks connection errors with error reasons.
+	EndpointErrors *prometheus.CounterVec
 
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
@@ -259,6 +261,14 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Help:      "endpoint availability status (1 = reachable, 0 = unreachable)",
 			},
 			[]string{"chain_id", "endpoint"},
+		),
+		EndpointErrors: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "endpoint_errors_total",
+				Help:      "total number of endpoint connection errors by error type",
+			},
+			[]string{"chain_id", "endpoint", "error_type"},
 		),
 		ranges:               make(map[string][]*blockRange),
 		lastBlockArrivalTime: make(map[string]time.Time),
@@ -532,6 +542,11 @@ func (m *Metrics) RecordEndpointAvailability(chainID, endpoint string, available
 		value = 1.0
 	}
 	m.EndpointAvailability.WithLabelValues(chainID, endpoint).Set(value)
+}
+
+// RecordEndpointError records an endpoint connection error with its type
+func (m *Metrics) RecordEndpointError(chainID, endpoint, errorType string) {
+	m.EndpointErrors.WithLabelValues(chainID, endpoint, errorType).Inc()
 }
 
 // RecordBlockReceiveDelay records the delay between block creation and reception

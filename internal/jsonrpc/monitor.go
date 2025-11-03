@@ -2,6 +2,7 @@ package jsonrpc
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/01builders/ev-metrics/internal/evm"
@@ -56,6 +57,11 @@ func performHealthCheck(
 	if err != nil {
 		// Record endpoint as unreachable
 		m.RecordEndpointAvailability(chainID, evmClient.GetRPCURL(), false)
+
+		// Classify and record the error type
+		errorType := classifyError(err)
+		m.RecordEndpointError(chainID, evmClient.GetRPCURL(), errorType)
+
 		return err
 	}
 
@@ -69,4 +75,51 @@ func performHealthCheck(
 		Msg("JSON-RPC health check completed")
 
 	return nil
+}
+
+// classifyError categorizes errors into specific types for metrics
+func classifyError(err error) string {
+	if err == nil {
+		return "none"
+	}
+
+	errStr := strings.ToLower(err.Error())
+
+	// Check for connection refused
+	if strings.Contains(errStr, "connection refused") {
+		return "connection_refused"
+	}
+
+	// Check for timeout errors
+	if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") {
+		return "timeout"
+	}
+
+	// Check for DNS/host resolution errors
+	if strings.Contains(errStr, "no such host") || strings.Contains(errStr, "dns") {
+		return "dns_error"
+	}
+
+	// Check for network unreachable
+	if strings.Contains(errStr, "network is unreachable") || strings.Contains(errStr, "no route to host") {
+		return "network_unreachable"
+	}
+
+	// Check for HTTP status errors
+	if strings.Contains(errStr, "status code") {
+		return "http_error"
+	}
+
+	// Check for EOF errors
+	if strings.Contains(errStr, "eof") {
+		return "eof"
+	}
+
+	// Check for TLS/certificate errors
+	if strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") {
+		return "tls_error"
+	}
+
+	// Default to unknown error type
+	return "unknown"
 }
