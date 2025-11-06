@@ -29,34 +29,15 @@ func NewClient(ctx context.Context, wsURL, rpcURL string, logger zerolog.Logger)
 	}
 
 	return &Client{
-		Client:   client,
-		logger:   logger.With().Str("component", "evm_client").Logger(),
-		rpcURL:   rpcURL,
-		wsURL:    wsURL,
+		Client: client,
+		logger: logger.With().Str("component", "evm_client").Logger(),
+		rpcURL: rpcURL,
+		wsURL:  wsURL,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
 	}, nil
 }
-
-// SubscribeNewHead subscribes to new block headers
-//func (c *Client) SubscribeNewHead(ctx context.Context, headers chan<- *types.Header) error {
-//	sub, err := c.Client.SubscribeNewHead(ctx, headers)
-//	if err != nil {
-//		return fmt.Errorf("failed to subscribe to new headers: %w", err)
-//	}
-//
-//	c.logger.Info().Msg("subscribed to new block headers")
-//
-//	// Wait for subscription errors or context cancellation
-//	select {
-//	case err := <-sub.Err():
-//		return fmt.Errorf("subscription error: %w", err)
-//	case <-ctx.Done():
-//		sub.Unsubscribe()
-//		return ctx.Err()
-//	}
-//}
 
 // HealthCheckRequest performs a lightweight JSON-RPC health check and returns the RTT duration
 func (c *Client) HealthCheckRequest(ctx context.Context) (time.Duration, error) {

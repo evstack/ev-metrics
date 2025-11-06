@@ -1,8 +1,8 @@
 ### Adding new monitors
 
-- when adding a new monitor to monitor.go, try to keep the structure consistent with existing monitors, this means:
-  - define a new package that exports a `Monitor` function, or create a struct that exposes some `monitorX` method.
-  - add any new metrics to the `Metrics` struct in metrics.go, and initialize them in the `metrics.New` constructor.
+- when adding a new metric exporter to monitor.go, try to keep the structure consistent with existing monitors, this means:
+  - define a new package that contains an implementation of the `metrics.Exporter` interface.
+  - conditionally append the new exporter to the `exporters` slice in `monitor.go` based on command-line flags.
   - ensure tests are present for the new metrics added.
 
 ### README File
