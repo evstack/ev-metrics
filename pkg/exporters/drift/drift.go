@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/01builders/ev-metrics/pkg/metrics"
+	"github.com/01builders/ev-metrics/pkg/utils"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/rs/zerolog"
 	"time"
@@ -53,9 +54,12 @@ func (e exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
 			refHeight, err := getBlockHeight(ctx, e.referenceNode)
 			if err != nil {
 				e.logger.Error().Err(err).Str("endpoint", e.referenceNode).Msg("failed to get reference node block height")
+				m.RecordEndpointAvailability(e.chainID, e.referenceNode, false)
+				m.RecordEndpointError(e.chainID, e.referenceNode, utils.CategorizeError(err))
 				continue
 			}
 
+			m.RecordEndpointAvailability(e.chainID, e.referenceNode, true)
 			m.RecordReferenceBlockHeight(e.chainID, e.referenceNode, refHeight)
 			e.logger.Info().Uint64("height", refHeight).Str("endpoint", e.referenceNode).Msg("recorded reference node height")
 
@@ -64,9 +68,12 @@ func (e exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
 				currentHeight, err := getBlockHeight(ctx, fullNode)
 				if err != nil {
 					e.logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
+					m.RecordEndpointAvailability(e.chainID, fullNode, false)
+					m.RecordEndpointError(e.chainID, fullNode, utils.CategorizeError(err))
 					continue
 				}
 
+				m.RecordEndpointAvailability(e.chainID, fullNode, true)
 				m.RecordCurrentBlockHeight(e.chainID, fullNode, currentHeight)
 				m.RecordBlockHeightDrift(e.chainID, fullNode, refHeight, currentHeight)
 
