@@ -1,4 +1,4 @@
-module github.com/01builders/ev-metrics
+module github.com/evstack/ev-metrics
 
 go 1.24.6
 

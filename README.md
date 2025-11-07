@@ -16,7 +16,7 @@ Data Availability metrics and monitoring tool for evstack using Celestia DA. Thi
 
 ```bash
 # Clone the repository
-git clone https://github.com/01builders/ev-metrics.git
+git clone https://github.com/evstack/ev-metrics.git
 cd ev-metrics
 
 # Install dependencies

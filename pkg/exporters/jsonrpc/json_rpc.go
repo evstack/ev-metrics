@@ -2,9 +2,9 @@ package jsonrpc
 
 import (
 	"context"
-	"github.com/01builders/ev-metrics/internal/clients/evm"
-	"github.com/01builders/ev-metrics/pkg/metrics"
-	"github.com/01builders/ev-metrics/pkg/utils"
+	"github.com/evstack/ev-metrics/internal/clients/evm"
+	"github.com/evstack/ev-metrics/pkg/metrics"
+	"github.com/evstack/ev-metrics/pkg/utils"
 	"time"
 
 	"github.com/rs/zerolog"

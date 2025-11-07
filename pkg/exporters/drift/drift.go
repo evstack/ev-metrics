@@ -3,8 +3,8 @@ package drift
 import (
 	"context"
 	"fmt"
-	"github.com/01builders/ev-metrics/pkg/metrics"
-	"github.com/01builders/ev-metrics/pkg/utils"
+	"github.com/evstack/ev-metrics/pkg/metrics"
+	"github.com/evstack/ev-metrics/pkg/utils"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/rs/zerolog"
 	"time"

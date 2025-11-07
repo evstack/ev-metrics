@@ -2,10 +2,10 @@ package verifier
 
 import (
 	"context"
-	"github.com/01builders/ev-metrics/internal/clients/celestia"
-	"github.com/01builders/ev-metrics/internal/clients/evm"
-	"github.com/01builders/ev-metrics/internal/clients/evnode"
-	"github.com/01builders/ev-metrics/pkg/metrics"
+	"github.com/evstack/ev-metrics/internal/clients/celestia"
+	"github.com/evstack/ev-metrics/internal/clients/evm"
+	"github.com/evstack/ev-metrics/internal/clients/evnode"
+	"github.com/evstack/ev-metrics/pkg/metrics"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 	"time"

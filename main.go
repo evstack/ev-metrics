@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/01builders/ev-metrics/cmd"
+	"github.com/evstack/ev-metrics/cmd"
 	"github.com/spf13/cobra"
 )
 
