@@ -149,7 +149,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Namespace: namespace,
 				Name:      "block_time_seconds",
 				Help:      "time between consecutive blocks with histogram buckets for accurate SLO calculations",
-				Buckets:   []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 20.0, 30.0},
+				Buckets:   []float64{0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.5, 2},
 			},
 			[]string{"chain_id"},
 		),
