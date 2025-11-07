@@ -24,16 +24,22 @@ type Metrics struct {
 	CurrentBlockHeight *prometheus.GaugeVec
 	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
 	BlockHeightDrift *prometheus.GaugeVec
-	// SubmissionDuration tracks DA blob submission duration quantiles over a rolling window.
+	// SubmissionDuration tracks DA blob submission duration percentiles over a rolling window.
 	SubmissionDuration *prometheus.SummaryVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
-	// BlockTime tracks the time between consecutive blocks over a rolling window.
-	BlockTime *prometheus.SummaryVec
+	// BlockTime tracks the time between consecutive blocks with histogram buckets for accurate SLO calculations.
+	BlockTime *prometheus.HistogramVec
+	// BlockReceiveDelay tracks the delay between block creation and reception with histogram buckets.
+	BlockReceiveDelay *prometheus.HistogramVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
 	JsonRpcRequestSloSeconds *prometheus.GaugeVec
+	// BlockTimeSloSeconds exports constant SLO thresholds for block time.
+	BlockTimeSloSeconds *prometheus.GaugeVec
+	// BlockReceiveDelaySloSeconds exports constant SLO thresholds for block receive delay.
+	BlockReceiveDelaySloSeconds *prometheus.GaugeVec
 	// EndpointAvailability tracks whether an endpoint is reachable (1.0 = available, 0.0 = unavailable).
 	EndpointAvailability *prometheus.GaugeVec
 	// EndpointErrors tracks endpoint connection errors by type.
@@ -136,18 +142,21 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "type"},
 		),
-		BlockTime: factory.NewSummaryVec(
-			prometheus.SummaryOpts{
+		BlockTime: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
 				Namespace: namespace,
 				Name:      "block_time_seconds",
-				Help:      "time between consecutive blocks over rolling window",
-				Objectives: map[float64]float64{
-					0.5:  0.05, // median block time
-					0.9:  0.01, // p90
-					0.99: 0.01, // p99
-				},
-				MaxAge:     5 * time.Minute,
-				AgeBuckets: 5,
+				Help:      "time between consecutive blocks with histogram buckets for accurate SLO calculations",
+				Buckets:   []float64{0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 15.0, 20.0, 30.0},
+			},
+			[]string{"chain_id"},
+		),
+		BlockReceiveDelay: factory.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: namespace,
+				Name:      "block_receive_delay_seconds",
+				Help:      "delay between block creation and reception with histogram buckets",
+				Buckets:   []float64{0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0},
 			},
 			[]string{"chain_id"},
 		),
@@ -166,7 +175,23 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Name:      "jsonrpc_request_slo_seconds",
 				Help:      "SLO thresholds for JSON-RPC request duration",
 			},
-			[]string{"chain_id", "percentile"},
+			[]string{"chain_id", "quantile"},
+		),
+		BlockTimeSloSeconds: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "block_time_slo_seconds",
+				Help:      "SLO thresholds for block time",
+			},
+			[]string{"chain_id", "quantile"},
+		),
+		BlockReceiveDelaySloSeconds: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "block_receive_delay_slo_seconds",
+				Help:      "SLO thresholds for block receive delay",
+			},
+			[]string{"chain_id", "quantile"},
 		),
 		EndpointAvailability: factory.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -439,17 +464,38 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 	m.lastBlockArrivalTime[chainID] = arrivalTime
 }
 
+// RecordBlockReceiveDelay records the delay between block creation and reception
+func (m *Metrics) RecordBlockReceiveDelay(chainID string, delay time.Duration) {
+	m.BlockReceiveDelay.WithLabelValues(chainID).Observe(delay.Seconds())
+}
+
 // RecordJsonRpcRequestDuration records the duration of a JSON-RPC request
 func (m *Metrics) RecordJsonRpcRequestDuration(chainID string, duration time.Duration) {
 	m.JsonRpcRequestDuration.WithLabelValues(chainID).Observe(duration.Seconds())
 }
 
-// InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges
+// InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges for JSON-RPC requests
 func (m *Metrics) InitializeJsonRpcSloThresholds(chainID string) {
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p50").Set(0.2)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p90").Set(0.35)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p95").Set(0.4)
-	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p99").Set(0.5)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "0.5").Set(0.2)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "0.9").Set(0.35)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "0.95").Set(0.4)
+	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "0.99").Set(0.5)
+}
+
+// InitializeBlockTimeSloThresholds initializes the constant SLO threshold gauges for block time
+func (m *Metrics) InitializeBlockTimeSloThresholds(chainID string) {
+	m.BlockTimeSloSeconds.WithLabelValues(chainID, "0.5").Set(2.0)
+	m.BlockTimeSloSeconds.WithLabelValues(chainID, "0.9").Set(3.0)
+	m.BlockTimeSloSeconds.WithLabelValues(chainID, "0.95").Set(4.0)
+	m.BlockTimeSloSeconds.WithLabelValues(chainID, "0.99").Set(5.0)
+}
+
+// InitializeBlockReceiveDelaySloThresholds initializes the constant SLO threshold gauges for block receive delay
+func (m *Metrics) InitializeBlockReceiveDelaySloThresholds(chainID string) {
+	m.BlockReceiveDelaySloSeconds.WithLabelValues(chainID, "0.5").Set(1.0)
+	m.BlockReceiveDelaySloSeconds.WithLabelValues(chainID, "0.9").Set(3.0)
+	m.BlockReceiveDelaySloSeconds.WithLabelValues(chainID, "0.95").Set(5.0)
+	m.BlockReceiveDelaySloSeconds.WithLabelValues(chainID, "0.99").Set(10.0)
 }
 
 // RecordEndpointAvailability records whether an endpoint is reachable

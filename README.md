@@ -137,13 +137,13 @@ When metrics are enabled, the following metrics are exposed:
 
 ### `ev_metrics_jsonrpc_request_slo_seconds`
 - **Type**: Gauge
-- **Labels**: `chain_id`, `percentile`
+- **Labels**: `chain_id`, `quantile`
 - **Description**: SLO thresholds for JSON-RPC request duration (enabled when `--evm-rpc-url` is provided)
 - **Values**:
-  - `p50`: 0.2s
-  - `p90`: 0.35s
-  - `p95`: 0.4s
-  - `p99`: 0.5s
+  - `0.5`: 0.2s
+  - `0.9`: 0.35s
+  - `0.95`: 0.4s
+  - `0.99`: 0.5s
 
 ### Block Height Drift Metrics
 
