@@ -34,6 +34,8 @@ type Metrics struct {
 	BlockReceiveDelay *prometheus.HistogramVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
 	JsonRpcRequestDuration *prometheus.HistogramVec
+	// JsonRpcRequestDurationSummary tracks JSON-RPC request duration with percentiles over a rolling window.
+	JsonRpcRequestDurationSummary *prometheus.SummaryVec
 	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
 	JsonRpcRequestSloSeconds *prometheus.GaugeVec
 	// BlockTimeSloSeconds exports constant SLO thresholds for block time.
@@ -166,6 +168,22 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Name:      "jsonrpc_request_duration_seconds",
 				Help:      "duration of JSON-RPC requests to the EVM node",
 				Buckets:   []float64{0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0},
+			},
+			[]string{"chain_id"},
+		),
+		JsonRpcRequestDurationSummary: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "jsonrpc_request_duration_summary_seconds",
+				Help:      "JSON-RPC request duration with percentiles over a rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05,
+					0.9:  0.01,
+					0.95: 0.01,
+					0.99: 0.001,
+				},
+				MaxAge:     60 * time.Second,
+				AgeBuckets: 6,
 			},
 			[]string{"chain_id"},
 		),
@@ -472,6 +490,7 @@ func (m *Metrics) RecordBlockReceiveDelay(chainID string, delay time.Duration) {
 // RecordJsonRpcRequestDuration records the duration of a JSON-RPC request
 func (m *Metrics) RecordJsonRpcRequestDuration(chainID string, duration time.Duration) {
 	m.JsonRpcRequestDuration.WithLabelValues(chainID).Observe(duration.Seconds())
+	m.JsonRpcRequestDurationSummary.WithLabelValues(chainID).Observe(duration.Seconds())
 }
 
 // InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges for JSON-RPC requests
