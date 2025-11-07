@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/01builders/ev-metrics/internal/clients/evm"
 	"github.com/01builders/ev-metrics/pkg/metrics"
+	"github.com/01builders/ev-metrics/pkg/utils"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -67,9 +68,12 @@ func performHealthCheck(
 ) error {
 	duration, err := evmClient.HealthCheckRequest(ctx)
 	if err != nil {
+		m.RecordEndpointAvailability(chainID, "jsonrpc", false)
+		m.RecordEndpointError(chainID, "jsonrpc", utils.CategorizeError(err))
 		return err
 	}
 
+	m.RecordEndpointAvailability(chainID, "jsonrpc", true)
 	m.RecordJsonRpcRequestDuration(chainID, duration)
 
 	logger.Info().

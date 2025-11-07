@@ -34,6 +34,10 @@ type Metrics struct {
 	JsonRpcRequestDuration *prometheus.HistogramVec
 	// JsonRpcRequestSloSeconds exports constant SLO thresholds for JSON-RPC requests.
 	JsonRpcRequestSloSeconds *prometheus.GaugeVec
+	// EndpointAvailability tracks whether an endpoint is reachable (1.0 = available, 0.0 = unavailable).
+	EndpointAvailability *prometheus.GaugeVec
+	// EndpointErrors tracks endpoint connection errors by type.
+	EndpointErrors *prometheus.CounterVec
 
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
@@ -163,6 +167,22 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Help:      "SLO thresholds for JSON-RPC request duration",
 			},
 			[]string{"chain_id", "percentile"},
+		),
+		EndpointAvailability: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "endpoint_availability",
+				Help:      "endpoint availability status (1.0 = available, 0.0 = unavailable)",
+			},
+			[]string{"chain_id", "endpoint"},
+		),
+		EndpointErrors: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "endpoint_errors_total",
+				Help:      "total number of endpoint connection errors by type",
+			},
+			[]string{"chain_id", "endpoint", "error_type"},
 		),
 		ranges:               make(map[string][]*blockRange),
 		lastBlockArrivalTime: make(map[string]time.Time),
@@ -430,4 +450,19 @@ func (m *Metrics) InitializeJsonRpcSloThresholds(chainID string) {
 	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p90").Set(0.35)
 	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p95").Set(0.4)
 	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "p99").Set(0.5)
+}
+
+// RecordEndpointAvailability records whether an endpoint is reachable
+// available should be true if endpoint is reachable, false otherwise
+func (m *Metrics) RecordEndpointAvailability(chainID, endpoint string, available bool) {
+	value := 0.0
+	if available {
+		value = 1.0
+	}
+	m.EndpointAvailability.WithLabelValues(chainID, endpoint).Set(value)
+}
+
+// RecordEndpointError records an endpoint connection error with its type
+func (m *Metrics) RecordEndpointError(chainID, endpoint, errorType string) {
+	m.EndpointErrors.WithLabelValues(chainID, endpoint, errorType).Inc()
 }
