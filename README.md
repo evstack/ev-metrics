@@ -9,6 +9,7 @@ Data Availability metrics and monitoring tool for evstack using Celestia DA. Thi
 - Retry logic with exponential backoff for pending DA submissions
 - Prometheus metrics for tracking unverified block ranges
 - Support for both streaming and one-shot block verification modes
+- Account balance monitoring via Celestia consensus RPC with automatic failover
 
 ## Quick Start
 
@@ -32,8 +33,8 @@ The monitor command streams EVM block headers and verifies DA submission on Cele
 
 ```bash
 ./ev-metrics monitor \
-  --header-namespace collect_testnet_header \
-  --data-namespace collect_testnet_data
+  --header-namespace testnet_header \
+  --data-namespace testnet_data
 ```
 
 
@@ -54,8 +55,8 @@ Metrics will be available at `http://localhost:2112/metrics`
 ### Command-Line Flags
 
 **Required:**
-- `--header-namespace`: Header namespace (e.g. collect_testnet_header )
-- `--data-namespace`: Data namespace (e.g. collect_testnet_data )
+- `--header-namespace`: Header namespace (e.g. testnet_header )
+- `--data-namespace`: Data namespace (e.g. testnet_data )
 
 **Optional:**
 - `--evnode-addr`: ev-node Connect RPC address (default: `http://localhost:7331`)
@@ -71,6 +72,9 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--reference-node`: Reference node RPC endpoint URL (sequencer) for drift monitoring
 - `--full-nodes`: Comma-separated list of full node RPC endpoint URLs for drift monitoring
 - `--polling-interval`: Polling interval in seconds for checking node block heights (default: 10)
+- `--balance.addresses`: Comma-separated Celestia addresses to monitor (enables balance checking)
+- `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
+- `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verbose`: Enable verbose logging (default: false)
 
 ### Example with Custom Endpoints
@@ -99,6 +103,22 @@ Enable JSON-RPC request duration monitoring by providing the `--evm-rpc-url` fla
 ```
 
 This will periodically send `eth_blockNumber` JSON-RPC requests to monitor node health and response times.
+
+### Example with Balance Monitoring
+
+Monitor native token balances for one or more Celestia addresses:
+
+```bash
+./ev-metrics monitor \
+  --header-namespace collect_testnet_header \
+  --data-namespace collect_testnet_data \
+  --balance.addresses "celestia1abc...,celestia1def..." \
+  --balance.consensus-rpc-urls "https://rpc.celestia.org,https://rpc-mocha.pops.one" \
+  --balance.scrape-interval 30 \
+  --enable-metrics
+```
+
+This will query account balances every 30 seconds with automatic failover between RPC endpoints.
 
 ## Prometheus Metrics
 
@@ -163,3 +183,22 @@ When `--reference-node` and `--full-nodes` are provided:
 - **Type**: Gauge
 - **Labels**: `chain_id`, `target_endpoint`
 - **Description**: Block height difference between reference and target endpoints (positive = target behind, negative = target ahead)
+
+### Balance Monitoring Metrics
+
+When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
+
+### `ev_metrics_account_balance`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `address`, `denom`
+- **Description**: Native token balance for Celestia addresses
+
+### `ev_metrics_consensus_rpc_endpoint_availability`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `endpoint`
+- **Description**: Consensus RPC endpoint availability status (1.0 = available, 0.0 = unavailable)
+
+### `ev_metrics_consensus_rpc_endpoint_errors_total`
+- **Type**: Counter
+- **Labels**: `chain_id`, `endpoint`, `error_type`
+- **Description**: Total number of consensus RPC endpoint errors by type

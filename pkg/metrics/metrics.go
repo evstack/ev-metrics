@@ -46,6 +46,12 @@ type Metrics struct {
 	EndpointAvailability *prometheus.GaugeVec
 	// EndpointErrors tracks endpoint connection errors by type.
 	EndpointErrors *prometheus.CounterVec
+	// AccountBalance tracks native token balance for Celestia addresses.
+	AccountBalance *prometheus.GaugeVec
+	// ConsensusRpcEndpointAvailability tracks consensus RPC endpoint health.
+	ConsensusRpcEndpointAvailability *prometheus.GaugeVec
+	// ConsensusRpcEndpointErrors tracks consensus RPC endpoint errors by type.
+	ConsensusRpcEndpointErrors *prometheus.CounterVec
 
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
@@ -224,6 +230,30 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Namespace: namespace,
 				Name:      "endpoint_errors_total",
 				Help:      "total number of endpoint connection errors by type",
+			},
+			[]string{"chain_id", "endpoint", "error_type"},
+		),
+		AccountBalance: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "account_balance",
+				Help:      "native token balance for celestia addresses",
+			},
+			[]string{"chain_id", "address", "denom"},
+		),
+		ConsensusRpcEndpointAvailability: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "consensus_rpc_endpoint_availability",
+				Help:      "consensus rpc endpoint availability status (1.0 = available, 0.0 = unavailable)",
+			},
+			[]string{"chain_id", "endpoint"},
+		),
+		ConsensusRpcEndpointErrors: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "consensus_rpc_endpoint_errors_total",
+				Help:      "total number of consensus rpc endpoint errors by type",
 			},
 			[]string{"chain_id", "endpoint", "error_type"},
 		),
@@ -530,4 +560,23 @@ func (m *Metrics) RecordEndpointAvailability(chainID, endpoint string, available
 // RecordEndpointError records an endpoint connection error with its type
 func (m *Metrics) RecordEndpointError(chainID, endpoint, errorType string) {
 	m.EndpointErrors.WithLabelValues(chainID, endpoint, errorType).Inc()
+}
+
+// RecordAccountBalance records the native token balance for a celestia address
+func (m *Metrics) RecordAccountBalance(chainID, address, denom string, balance float64) {
+	m.AccountBalance.WithLabelValues(chainID, address, denom).Set(balance)
+}
+
+// RecordConsensusRpcEndpointAvailability records whether a consensus rpc endpoint is reachable
+func (m *Metrics) RecordConsensusRpcEndpointAvailability(chainID, endpoint string, available bool) {
+	value := 0.0
+	if available {
+		value = 1.0
+	}
+	m.ConsensusRpcEndpointAvailability.WithLabelValues(chainID, endpoint).Set(value)
+}
+
+// RecordConsensusRpcEndpointError records a consensus rpc endpoint error with its type
+func (m *Metrics) RecordConsensusRpcEndpointError(chainID, endpoint, errorType string) {
+	m.ConsensusRpcEndpointErrors.WithLabelValues(chainID, endpoint, errorType).Inc()
 }

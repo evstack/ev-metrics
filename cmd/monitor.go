@@ -13,6 +13,7 @@ import (
 	"github.com/evstack/ev-metrics/internal/clients/celestia"
 	"github.com/evstack/ev-metrics/internal/clients/evm"
 	"github.com/evstack/ev-metrics/internal/clients/evnode"
+	"github.com/evstack/ev-metrics/pkg/exporters/balance"
 	"github.com/evstack/ev-metrics/pkg/exporters/drift"
 	"github.com/evstack/ev-metrics/pkg/exporters/jsonrpc"
 	"github.com/evstack/ev-metrics/pkg/exporters/verifier"
@@ -38,6 +39,9 @@ const (
 	flagFullNodes             = "full-nodes"
 	flagPollingInterval       = "polling-interval"
 	flagJsonRpcScrapeInterval = "jsonrpc-scrape-interval"
+	flagBalanceAddresses      = "balance.addresses"
+	flagBalanceRpcUrls        = "balance.consensus-rpc-urls"
+	flagBalanceScrapeInterval = "balance.scrape-interval"
 
 	metricsPath = "/metrics"
 )
@@ -60,6 +64,9 @@ type flagValues struct {
 	fullNodes             string
 	pollingInterval       int
 	jsonRpcScrapeInterval int
+	balanceAddresses      string
+	balanceRpcUrls        string
+	balanceScrapeInterval int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -89,6 +96,9 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.fullNodes, flagFullNodes, "", "Comma-separated list of full node RPC endpoint URLs for drift monitoring")
 	cmd.Flags().IntVar(&flags.pollingInterval, flagPollingInterval, 10, "Polling interval in seconds for checking node block heights (default: 10)")
 	cmd.Flags().IntVar(&flags.jsonRpcScrapeInterval, flagJsonRpcScrapeInterval, 10, "JSON-RPC health check scrape interval in seconds (default: 10)")
+	cmd.Flags().StringVar(&flags.balanceAddresses, flagBalanceAddresses, "", "Comma-separated celestia addresses to monitor (enables balance checking)")
+	cmd.Flags().StringVar(&flags.balanceRpcUrls, flagBalanceRpcUrls, "", "Comma-separated consensus rpc urls for balance queries (required if balance.addresses is set)")
+	cmd.Flags().IntVar(&flags.balanceScrapeInterval, flagBalanceScrapeInterval, 30, "Balance check scrape interval in seconds (default: 30)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -206,6 +216,30 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 	// Start JSON-RPC health monitoring if evm-rpc-url is provided
 	if flags.evmRpcURL != "" {
 		exporters = append(exporters, jsonrpc.NewMetricsExporter(flags.chainID, cfg.EvmClient, flags.jsonRpcScrapeInterval, logger))
+	}
+
+	// start balance monitoring if balance.addresses is provided
+	if flags.balanceAddresses != "" {
+		if flags.balanceRpcUrls == "" {
+			return fmt.Errorf("--balance.consensus-rpc-urls is required when --balance.addresses is set")
+		}
+
+		addressList := strings.Split(flags.balanceAddresses, ",")
+		rpcUrls := strings.Split(flags.balanceRpcUrls, ",")
+
+		exporters = append(exporters, balance.NewMetricsExporter(
+			flags.chainID,
+			addressList,
+			rpcUrls,
+			flags.balanceScrapeInterval,
+			logger,
+		))
+
+		logger.Info().
+			Strs("addresses", addressList).
+			Strs("rpc_urls", rpcUrls).
+			Int("scrape_interval", flags.balanceScrapeInterval).
+			Msg("balance monitoring enabled")
 	}
 
 	err = metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
