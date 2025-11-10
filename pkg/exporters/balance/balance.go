@@ -56,31 +56,10 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			e.logger.Info().Msg("stopping balance monitoring")
 			return ctx.Err()
 		case <-ticker.C:
-			e.checkEndpointAvailability(m)
 			for _, address := range e.addresses {
 				e.checkBalance(ctx, m, address)
 			}
 		}
-	}
-}
-
-// checkEndpointAvailability checks the availability of each endpoint and marks them as unavailable if any fail.
-func (e *exporter) checkEndpointAvailability(m *metrics.Metrics) {
-	for _, endpoint := range e.endpoints {
-		if _, err := cosmos.NewClient(endpoint, e.logger); err != nil {
-			e.logger.Warn().
-				Err(err).
-				Str("endpoint", endpoint).
-				Msg("failed to create client, marking endpoint as unavailable")
-			m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
-			m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
-			continue
-		}
-
-		e.logger.Info().
-			Str("endpoint", endpoint).
-			Msg("marking endpoint as available")
-		m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, true)
 	}
 }
 
@@ -96,6 +75,8 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, address
 				Str("endpoint", endpoint).
 				Str("address", address).
 				Msg("failed to create client, trying next endpoint")
+			m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
+			m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
 			continue
 		}
 
@@ -111,6 +92,8 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, address
 				Str("endpoint", endpoint).
 				Str("address", address).
 				Msg("failed to query balance, trying next endpoint")
+			m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
+			m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
 			continue
 		}
 
@@ -141,7 +124,7 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, address
 				Msg("recorded account balance")
 		}
 
-		// successfully queried from this endpoint, done
+		// successfully queried from this endpoint
 		return
 	}
 
