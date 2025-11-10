@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
@@ -533,6 +534,33 @@ func TestMetrics_ComplexScenario(t *testing.T) {
 		}
 		require.True(t, found, "expected to find range [%d-%d]", expected.start, expected.end)
 	}
+}
+
+func TestMetrics_RecordSubmissionDuration(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewWithRegistry("test", reg)
+
+	// record submission durations
+	m.RecordSubmissionDuration("chain1", "header", 5*time.Second)
+	// overwrite submission duration
+	m.RecordSubmissionDuration("chain1", "header", 6*time.Second)
+	m.RecordSubmissionDuration("chain1", "data", 10*time.Second)
+	m.RecordSubmissionDuration("chain2", "header", 3*time.Second)
+
+	// verify stored in memory
+	require.Equal(t, 6*time.Second, m.lastSubmissionDurations["chain1:header"], "last submission duration should be present")
+	require.Equal(t, 10*time.Second, m.lastSubmissionDurations["chain1:data"])
+	require.Equal(t, 3*time.Second, m.lastSubmissionDurations["chain2:header"])
+}
+
+func TestMetrics_RefreshSubmissionDuration_Empty(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewWithRegistry("test", reg)
+
+	// call refresh without any recorded values - should not panic
+	require.NotPanics(t, func() {
+		m.RefreshSubmissionDuration()
+	})
 }
 
 // helper types for table tests
