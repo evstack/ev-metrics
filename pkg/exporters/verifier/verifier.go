@@ -2,11 +2,11 @@ package verifier
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/evstack/ev-metrics/internal/clients/celestia"
 	"github.com/evstack/ev-metrics/internal/clients/evm"
 	"github.com/evstack/ev-metrics/internal/clients/evnode"
 	"github.com/evstack/ev-metrics/pkg/metrics"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/rs/zerolog"
 	"time"
 )
@@ -53,11 +53,18 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	}
 	defer sub.Unsubscribe()
 
+	// ticker to refresh submission duration metric every 10 seconds
+	refreshTicker := time.NewTicker(10 * time.Second)
+	defer refreshTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			e.logger.Info().Msg("stopping block verification")
 			return nil
+		case <-refreshTicker.C:
+			// ensure that submission duration is always included in the 60 second window.
+			m.RefreshSubmissionDuration()
 		case header := <-headers:
 			// record block arrival time for millisecond precision
 			arrivalTime := time.Now()

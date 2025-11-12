@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,6 +60,9 @@ type Metrics struct {
 
 	// internal tracking for block time calculation (uses arrival time for ms precision)
 	lastBlockArrivalTime map[string]time.Time // key: chainID
+
+	// lastSubmissionDurations tracks the most recent submission durations.
+	lastSubmissionDurations map[string]time.Duration // key: chainID:namespace
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -257,8 +261,9 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "endpoint", "error_type"},
 		),
-		ranges:               make(map[string][]*blockRange),
-		lastBlockArrivalTime: make(map[string]time.Time),
+		ranges:                  make(map[string][]*blockRange),
+		lastBlockArrivalTime:    make(map[string]time.Time),
+		lastSubmissionDurations: make(map[string]time.Duration),
 	}
 
 	return m
@@ -490,7 +495,27 @@ func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referen
 
 // RecordSubmissionDuration records the da submission duration for a given submission type
 func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, duration time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.SubmissionDuration.WithLabelValues(chainID, submissionType).Observe(duration.Seconds())
+
+	key := fmt.Sprintf("%s:%s", chainID, submissionType)
+	m.lastSubmissionDurations[key] = duration
+}
+
+// RefreshSubmissionDuration re-observes the last known submission duration to keep the metric alive.
+func (m *Metrics) RefreshSubmissionDuration() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for key, duration := range m.lastSubmissionDurations {
+		// assuming format "chainID:namespace"
+		parts := strings.Split(key, ":")
+		if len(parts) == 2 {
+			m.SubmissionDuration.WithLabelValues(parts[0], parts[1]).Observe(duration.Seconds())
+		}
+	}
 }
 
 // RecordBlockTime records the time between consecutive blocks using arrival time
