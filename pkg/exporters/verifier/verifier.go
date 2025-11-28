@@ -2,13 +2,15 @@ package verifier
 
 import (
 	"context"
+	"sync"
+	"time"
+
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/evstack/ev-metrics/internal/clients/celestia"
 	"github.com/evstack/ev-metrics/internal/clients/evm"
 	"github.com/evstack/ev-metrics/internal/clients/evnode"
 	"github.com/evstack/ev-metrics/pkg/metrics"
 	"github.com/rs/zerolog"
-	"time"
 )
 
 var _ metrics.Exporter = &exporter{}
@@ -20,6 +22,7 @@ func NewMetricsExporter(
 	evmClient *evm.Client,
 	headerNS, dataNS []byte,
 	chainID string,
+	workers int,
 	logger zerolog.Logger,
 ) metrics.Exporter {
 	return &exporter{
@@ -29,6 +32,7 @@ func NewMetricsExporter(
 		headerNS:       headerNS,
 		dataNS:         dataNS,
 		chainID:        chainID,
+		workers:        workers,
 		logger:         logger.With().Str("component", "verification_monitor").Logger(),
 	}
 }
@@ -41,6 +45,7 @@ type exporter struct {
 	headerNS       []byte
 	dataNS         []byte
 	chainID        string
+	workers        int
 	logger         zerolog.Logger
 }
 
@@ -53,14 +58,33 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	}
 	defer sub.Unsubscribe()
 
+	// create buffered channel for block queue
+	blockQueue := make(chan *types.Header, e.workers*2)
+
+	// start work pool
+	var workerGroup sync.WaitGroup
+	for i := 0; i < e.workers; i++ {
+		workerGroup.Add(1)
+		workerID := i
+		go func() {
+			defer workerGroup.Done()
+			e.processBlocks(ctx, m, workerID, blockQueue)
+		}()
+	}
+
+	e.logger.Info().Int("workers", e.workers).Msg("started verification work pool")
+
 	// ticker to refresh submission duration metric every 10 seconds
 	refreshTicker := time.NewTicker(10 * time.Second)
 	defer refreshTicker.Stop()
 
+	// main subscription loop
 	for {
 		select {
 		case <-ctx.Done():
 			e.logger.Info().Msg("stopping block verification")
+			close(blockQueue)
+			workerGroup.Wait()
 			return nil
 		case <-refreshTicker.C:
 			// ensure that submission duration is always included in the 60 second window.
@@ -75,10 +99,29 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 				Time("arrival_time", arrivalTime).
 				Msg("received block header from subscription")
 
-			// spawn a goroutine to handle this block's retries
-			go e.verifyBlock(ctx, m, header)
+			// send block to work pool, blocking until space is available
+			select {
+			case blockQueue <- header:
+				// block queued successfully
+			case <-ctx.Done():
+				close(blockQueue)
+				workerGroup.Wait()
+				return nil
+			}
 		}
 	}
+}
+
+// processBlocks processes blocks from the queue
+func (e *exporter) processBlocks(ctx context.Context, m *metrics.Metrics, workerID int, blockQueue <-chan *types.Header) {
+	logger := e.logger.With().Int("worker_id", workerID).Logger()
+	logger.Debug().Msg("worker started")
+
+	for header := range blockQueue {
+		e.verifyBlock(ctx, m, header)
+	}
+
+	logger.Debug().Msg("worker stopped")
 }
 
 func (e *exporter) onVerified(m *metrics.Metrics, namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {

@@ -42,6 +42,7 @@ const (
 	flagBalanceAddresses      = "balance.addresses"
 	flagBalanceRpcUrls        = "balance.consensus-rpc-urls"
 	flagBalanceScrapeInterval = "balance.scrape-interval"
+	flagVerifierWorkers       = "verifier.workers"
 
 	metricsPath = "/metrics"
 )
@@ -67,6 +68,7 @@ type flagValues struct {
 	balanceAddresses      string
 	balanceRpcUrls        string
 	balanceScrapeInterval int
+	verifierWorkers       int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -99,6 +101,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.balanceAddresses, flagBalanceAddresses, "", "Comma-separated celestia addresses to monitor (enables balance checking)")
 	cmd.Flags().StringVar(&flags.balanceRpcUrls, flagBalanceRpcUrls, "", "Comma-separated consensus rpc urls for balance queries (required if balance.addresses is set)")
 	cmd.Flags().IntVar(&flags.balanceScrapeInterval, flagBalanceScrapeInterval, 30, "Balance check scrape interval in seconds (default: 30)")
+	cmd.Flags().IntVar(&flags.verifierWorkers, flagVerifierWorkers, 50, "Number of concurrent workers for block verification (default: 50)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -204,6 +207,7 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 			cfg.HeaderNS,
 			cfg.DataNS,
 			flags.chainID,
+			flags.verifierWorkers,
 			logger,
 		),
 	}

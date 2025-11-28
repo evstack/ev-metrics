@@ -75,6 +75,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.addresses`: Comma-separated Celestia addresses to monitor (enables balance checking)
 - `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
+- `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
 - `--verbose`: Enable verbose logging (default: false)
 
 ### Example with Custom Endpoints
