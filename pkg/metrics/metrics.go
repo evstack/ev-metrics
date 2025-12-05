@@ -31,6 +31,8 @@ type Metrics struct {
 	SubmissionDaHeight *prometheus.GaugeVec
 	// BlockTime tracks the time between consecutive blocks with histogram buckets for accurate SLO calculations.
 	BlockTime *prometheus.HistogramVec
+	// BlockTimeSummary tracks block time with percentiles over a rolling window.
+	BlockTimeSummary *prometheus.SummaryVec
 	// BlockReceiveDelay tracks the delay between block creation and reception with histogram buckets.
 	BlockReceiveDelay *prometheus.HistogramVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
@@ -160,6 +162,22 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				Name:      "block_time_seconds",
 				Help:      "time between consecutive blocks with histogram buckets for accurate SLO calculations",
 				Buckets:   []float64{0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.5, 2},
+			},
+			[]string{"chain_id"},
+		),
+		BlockTimeSummary: factory.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Namespace: namespace,
+				Name:      "block_time_summary_seconds",
+				Help:      "block time with percentiles over a 60-second rolling window",
+				Objectives: map[float64]float64{
+					0.5:  0.05,
+					0.9:  0.01,
+					0.95: 0.01,
+					0.99: 0.001,
+				},
+				MaxAge:     60 * time.Second,
+				AgeBuckets: 6,
 			},
 			[]string{"chain_id"},
 		),
@@ -530,6 +548,7 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 		// only record positive durations
 		if blockTime > 0 {
 			m.BlockTime.WithLabelValues(chainID).Observe(blockTime.Seconds())
+			m.BlockTimeSummary.WithLabelValues(chainID).Observe(blockTime.Seconds())
 		}
 	}
 
