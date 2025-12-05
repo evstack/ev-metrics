@@ -169,7 +169,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			prometheus.SummaryOpts{
 				Namespace: namespace,
 				Name:      "block_time_summary_seconds",
-				Help:      "block time with percentiles over a rolling window",
+				Help:      "block time with percentiles over a 60-second rolling window",
 				Objectives: map[float64]float64{
 					0.5:  0.05,
 					0.9:  0.01,
