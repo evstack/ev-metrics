@@ -150,6 +150,56 @@ When metrics are enabled, the following metrics are exposed:
 - **Labels**: `chain_id`, `type`
 - **Description**: Latest DA height for header and data submissions
 
+### Block Time Metrics
+
+### `ev_metrics_block_time_seconds`
+- **Type**: Histogram
+- **Labels**: `chain_id`
+- **Description**: Time between consecutive blocks with histogram buckets for accurate SLO calculations
+- **Buckets**: 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.5, 2 seconds
+
+### `ev_metrics_block_time_summary_seconds`
+- **Type**: Summary
+- **Labels**: `chain_id`
+- **Description**: Block time with percentiles over a 60-second rolling window
+- **Note**: Will show NaN when no blocks have been received in the last 60 seconds
+
+### `ev_metrics_time_since_last_block_seconds`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Seconds since last block was received. Use this metric for alerting on stale blocks.
+- **Alerting**: Alert when this value exceeds 60 seconds to detect block production issues before summary metrics show NaN
+
+### `ev_metrics_block_time_slo_seconds`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `quantile`
+- **Description**: SLO thresholds for block time
+- **Values**:
+  - `0.5`: 2.0s
+  - `0.9`: 3.0s
+  - `0.95`: 4.0s
+  - `0.99`: 5.0s
+
+### `ev_metrics_block_receive_delay_seconds`
+- **Type**: Histogram
+- **Labels**: `chain_id`
+- **Description**: Delay between block creation and reception with histogram buckets
+- **Buckets**: 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0 seconds
+
+### `ev_metrics_block_receive_delay_slo_seconds`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `quantile`
+- **Description**: SLO thresholds for block receive delay
+- **Values**:
+  - `0.5`: 1.0s
+  - `0.9`: 3.0s
+  - `0.95`: 5.0s
+  - `0.99`: 10.0s
+
+### JSON-RPC Monitoring Metrics
+
+When `--evm-rpc-url` is provided:
+
 ### `ev_metrics_jsonrpc_request_duration_seconds`
 - **Type**: Histogram
 - **Labels**: `chain_id`

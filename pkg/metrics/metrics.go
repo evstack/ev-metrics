@@ -33,6 +33,8 @@ type Metrics struct {
 	BlockTime *prometheus.HistogramVec
 	// BlockTimeSummary tracks block time with percentiles over a rolling window.
 	BlockTimeSummary *prometheus.SummaryVec
+	// TimeSinceLastBlock tracks seconds since last block was received.
+	TimeSinceLastBlock *prometheus.GaugeVec
 	// BlockReceiveDelay tracks the delay between block creation and reception with histogram buckets.
 	BlockReceiveDelay *prometheus.HistogramVec
 	// JsonRpcRequestDuration tracks the duration of JSON-RPC requests to the EVM node.
@@ -178,6 +180,14 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				},
 				MaxAge:     60 * time.Second,
 				AgeBuckets: 6,
+			},
+			[]string{"chain_id"},
+		),
+		TimeSinceLastBlock: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "time_since_last_block_seconds",
+				Help:      "seconds since last block was received",
 			},
 			[]string{"chain_id"},
 		),
@@ -554,6 +564,21 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 
 	// update last seen arrival time
 	m.lastBlockArrivalTime[chainID] = arrivalTime
+	// reset time since last block to 0
+	m.TimeSinceLastBlock.WithLabelValues(chainID).Set(0)
+}
+
+// UpdateTimeSinceLastBlock updates the time_since_last_block metric for all chains
+// should be called periodically to keep the metric current.
+func (m *Metrics) UpdateTimeSinceLastBlock() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for chainID, lastArrival := range m.lastBlockArrivalTime {
+		timeSince := now.Sub(lastArrival).Seconds()
+		m.TimeSinceLastBlock.WithLabelValues(chainID).Set(timeSince)
+	}
 }
 
 // RecordBlockReceiveDelay records the delay between block creation and reception
