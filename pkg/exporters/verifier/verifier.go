@@ -89,6 +89,8 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 		case <-refreshTicker.C:
 			// ensure that submission duration is always included in the 60 second window.
 			m.RefreshSubmissionDuration()
+			// update time since last block metric
+			m.UpdateTimeSinceLastBlock()
 		case header := <-headers:
 			// record block arrival time for millisecond precision
 			arrivalTime := time.Now()
