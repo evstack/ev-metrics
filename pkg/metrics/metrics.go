@@ -562,10 +562,7 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 		}
 	}
 
-	// update last seen arrival time
-	m.lastBlockArrivalTime[chainID] = arrivalTime
-	// reset time since last block to 0
-	m.TimeSinceLastBlock.WithLabelValues(chainID).Set(0)
+	m.updateLastBlockTimeUnsafe(chainID, arrivalTime)
 }
 
 // UpdateLastBlockTime updates the last block arrival time and resets time since last block metric
@@ -573,7 +570,13 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 func (m *Metrics) UpdateLastBlockTime(chainID string, arrivalTime time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateLastBlockTimeUnsafe(chainID, arrivalTime)
+}
 
+// updateLastBlockTimeUnsafe is an unexported helper that updates the last block arrival time
+// and resets the time since last block gauge.
+// This function is not thread-safe and should be called with a lock held.
+func (m *Metrics) updateLastBlockTimeUnsafe(chainID string, arrivalTime time.Time) {
 	// update last seen arrival time
 	m.lastBlockArrivalTime[chainID] = arrivalTime
 	// reset time since last block to 0
