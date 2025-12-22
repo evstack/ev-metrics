@@ -77,6 +77,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
 - `--verbose`: Enable verbose logging (default: false)
+- `--debug`: Enable debug logging for submission details (default: false, can also be set via `EVMETRICS_DEBUG=true` environment variable)
 
 ### Example with Custom Endpoints
 
@@ -149,6 +150,26 @@ When metrics are enabled, the following metrics are exposed:
 - **Type**: Gauge
 - **Labels**: `chain_id`, `type`
 - **Description**: Latest DA height for header and data submissions
+
+### `ev_metrics_submission_attempts_total`
+- **Type**: Counter
+- **Labels**: `chain_id`, `type`
+- **Description**: Total number of DA submission attempts (both successful and failed)
+
+### `ev_metrics_submission_failures_total`
+- **Type**: Counter
+- **Labels**: `chain_id`, `type`
+- **Description**: Total number of failed DA submission attempts
+
+### `ev_metrics_last_submission_attempt_time`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `type`
+- **Description**: Timestamp of the last DA submission attempt (Unix timestamp)
+
+### `ev_metrics_last_successful_submission_time`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `type`
+- **Description**: Timestamp of the last successful DA submission (Unix timestamp)
 
 ### Block Time Metrics
 
@@ -253,3 +274,18 @@ When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
 - **Type**: Counter
 - **Labels**: `chain_id`, `endpoint`, `error_type`
 - **Description**: Total number of consensus RPC endpoint errors by type
+
+## Debug Logging
+
+Debug logging provides detailed visibility into DA submission process. Enable with `--debug` flag or `EVMETRICS_DEBUG=true` environment variable.
+
+**Use cases**: Troubleshoot submission failures, verify submission flow, diagnose Celestia RPC issues.
+
+**Logs include**: Successful/failed submissions, DA height updates, submission timing.
+
+**Example**:
+```bash
+# Enable debug logging
+export EVMETRICS_DEBUG=true
+./ev-metrics monitor --header-namespace testnet_header --data-namespace testnet_data
+```

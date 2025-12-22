@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -79,6 +80,11 @@ type Metrics struct {
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
+}
+
+// isDebugEnabled returns true if debug logging is enabled via environment variable
+func isDebugEnabled() bool {
+	return strings.ToLower(os.Getenv("EVMETRICS_DEBUG")) == "true"
 }
 
 type blockRange struct {
@@ -356,9 +362,13 @@ func (m *Metrics) RecordSubmissionAttempt(chainID, submissionType string, succes
 
 	if success {
 		m.LastSuccessfulSubmissionTime.WithLabelValues(chainID, submissionType).Set(float64(now.Unix()))
-		log.Printf("DEBUG: Successful submission - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		if isDebugEnabled() {
+			log.Printf("DEBUG: Successful submission - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		}
 	} else {
-		log.Printf("DEBUG: Failed submission attempt - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		if isDebugEnabled() {
+			log.Printf("DEBUG: Failed submission attempt - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		}
 	}
 }
 
@@ -372,10 +382,14 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 			m.latestHeaderDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "header").Set(float64(daHeight))
 			// Debug log when submission DA height is recorded
-			log.Printf("DEBUG: Recorded header submission DA height - chain: %s, height: %d", chainID, daHeight)
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Recorded header submission DA height - chain: %s, height: %d", chainID, daHeight)
+			}
 		} else {
 			// Debug log when DA height is not higher than previous
-			log.Printf("DEBUG: Header DA height %d not higher than previous %d for chain %s", daHeight, m.latestHeaderDaHeight, chainID)
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Header DA height %d not higher than previous %d for chain %s", daHeight, m.latestHeaderDaHeight, chainID)
+			}
 		}
 		return
 	}
@@ -385,10 +399,14 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 			m.latestDataDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "data").Set(float64(daHeight))
 			// Debug log when submission DA height is recorded
-			log.Printf("DEBUG: Recorded data submission DA height - chain: %s, height: %d", chainID, daHeight)
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Recorded data submission DA height - chain: %s, height: %d", chainID, daHeight)
+			}
 		} else {
 			// Debug log when DA height is not higher than previous
-			log.Printf("DEBUG: Data DA height %d not higher than previous %d for chain %s", daHeight, m.latestDataDaHeight, chainID)
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Data DA height %d not higher than previous %d for chain %s", daHeight, m.latestDataDaHeight, chainID)
+			}
 		}
 	}
 }
