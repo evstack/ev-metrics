@@ -563,6 +563,130 @@ func TestMetrics_RefreshSubmissionDuration_Empty(t *testing.T) {
 	})
 }
 
+func TestMetrics_RecordSubmissionAttempt(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewWithRegistry("test", reg)
+
+	// Test successful submission
+	beforeAttempt := time.Now()
+	m.RecordSubmissionAttempt("testchain", "header", true)
+	afterAttempt := time.Now()
+
+	// Verify counters
+	attempts := getMetricValue(t, reg, "test_submission_attempts_total", map[string]string{
+		"chain_id": "testchain",
+		"type":     "header",
+	})
+	require.Equal(t, float64(1), attempts, "should have 1 attempt")
+
+	// For successful submission, failures should be 0 (metric may not be exported if 0)
+	// We'll check if the metric exists and has value 0, or doesn't exist (both are valid)
+	failuresMetricFound := false
+	failures := float64(0)
+	metrics, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range metrics {
+		if mf.GetName() == "test_submission_failures_total" {
+			for _, m := range mf.GetMetric() {
+				// check if labels match
+				match := true
+				for _, label := range m.GetLabel() {
+					if expectedVal, ok := map[string]string{"chain_id": "testchain", "type": "header"}[label.GetName()]; ok {
+						if label.GetValue() != expectedVal {
+							match = false
+							break
+						}
+					}
+				}
+				if match && len(m.GetLabel()) == 2 {
+					failuresMetricFound = true
+					if m.GetCounter() != nil {
+						failures = m.GetCounter().GetValue()
+					}
+					break
+				}
+			}
+		}
+	}
+	if failuresMetricFound {
+		require.Equal(t, float64(0), failures, "should have 0 failures")
+	} // else: metric not exported because value is 0, which is expected behavior
+
+	// Verify timestamps are within expected range
+	lastAttemptTime := getMetricValue(t, reg, "test_last_submission_attempt_time", map[string]string{
+		"chain_id": "testchain",
+		"type":     "header",
+	})
+	require.GreaterOrEqual(t, lastAttemptTime, float64(beforeAttempt.Unix()))
+	require.LessOrEqual(t, lastAttemptTime, float64(afterAttempt.Unix()))
+
+	lastSuccessTime := getMetricValue(t, reg, "test_last_successful_submission_time", map[string]string{
+		"chain_id": "testchain",
+		"type":     "header",
+	})
+	require.GreaterOrEqual(t, lastSuccessTime, float64(beforeAttempt.Unix()))
+	require.LessOrEqual(t, lastSuccessTime, float64(afterAttempt.Unix()))
+
+	// Test failed submission
+	beforeFailure := time.Now()
+	m.RecordSubmissionAttempt("testchain", "data", false)
+	afterFailure := time.Now()
+
+	// Verify counters
+	attempts = getMetricValue(t, reg, "test_submission_attempts_total", map[string]string{
+		"chain_id": "testchain",
+		"type":     "data",
+	})
+	require.Equal(t, float64(1), attempts, "should have 1 attempt for data")
+
+	failures = getMetricValue(t, reg, "test_submission_failures_total", map[string]string{
+		"chain_id": "testchain",
+		"type":     "data",
+	})
+	require.Equal(t, float64(1), failures, "should have 1 failure for data")
+
+	// Verify timestamps - should have attempt time but not success time for failed submission
+	lastAttemptTime = getMetricValue(t, reg, "test_last_submission_attempt_time", map[string]string{
+		"chain_id": "testchain",
+		"type":     "data",
+	})
+	require.GreaterOrEqual(t, lastAttemptTime, float64(beforeFailure.Unix()))
+	require.LessOrEqual(t, lastAttemptTime, float64(afterFailure.Unix()))
+
+	// Last successful submission time should still be 0 for data type (never succeeded)
+	// Gauge metrics with 0 values may not be exported, so we need to check if it exists
+	var lastSuccessTimeData float64
+	var successMetricFoundData bool
+	metrics, err = reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range metrics {
+		if mf.GetName() == "test_last_successful_submission_time" {
+			for _, m := range mf.GetMetric() {
+				// check if labels match
+				match := true
+				for _, label := range m.GetLabel() {
+					if expectedVal, ok := map[string]string{"chain_id": "testchain", "type": "data"}[label.GetName()]; ok {
+						if label.GetValue() != expectedVal {
+							match = false
+							break
+						}
+					}
+				}
+					if match && len(m.GetLabel()) == 2 {
+					successMetricFoundData = true
+					if m.GetGauge() != nil {
+						lastSuccessTimeData = m.GetGauge().GetValue()
+					}
+					break
+				}
+			}
+		}
+	}
+	if successMetricFoundData {
+		require.Equal(t, float64(0), lastSuccessTimeData, "should have no successful submission time for data")
+	} // else: metric not exported because value is 0, which is expected behavior
+}
+
 // helper types for table tests
 type blockToRecord struct {
 	chain    string
@@ -593,7 +717,7 @@ func calculateExpectedTotal(ranges []expectedRange, blobType string) uint64 {
 	return total
 }
 
-// getMetricValue retrieves the current value of a gauge metric
+// getMetricValue retrieves the current value of a metric (gauge or counter)
 func getMetricValue(t *testing.T, reg *prometheus.Registry, metricName string, labels map[string]string) float64 {
 	t.Helper()
 	metrics, err := reg.Gather()
@@ -613,7 +737,13 @@ func getMetricValue(t *testing.T, reg *prometheus.Registry, metricName string, l
 					}
 				}
 				if match && len(m.GetLabel()) == len(labels) {
-					return m.GetGauge().GetValue()
+					// Try gauge first, then counter
+					if m.GetGauge() != nil {
+						return m.GetGauge().GetValue()
+					}
+					if m.GetCounter() != nil {
+						return m.GetCounter().GetValue()
+					}
 				}
 			}
 		}

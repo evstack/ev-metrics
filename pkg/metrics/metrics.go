@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +31,14 @@ type Metrics struct {
 	SubmissionDuration *prometheus.SummaryVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
+	// SubmissionAttemptsTotal tracks the total number of submission attempts.
+	SubmissionAttemptsTotal *prometheus.CounterVec
+	// SubmissionFailuresTotal tracks the total number of failed submission attempts.
+	SubmissionFailuresTotal *prometheus.CounterVec
+	// LastSubmissionAttemptTime tracks the timestamp of the last submission attempt.
+	LastSubmissionAttemptTime *prometheus.GaugeVec
+	// LastSuccessfulSubmissionTime tracks the timestamp of the last successful submission.
+	LastSuccessfulSubmissionTime *prometheus.GaugeVec
 	// BlockTime tracks the time between consecutive blocks with histogram buckets for accurate SLO calculations.
 	BlockTime *prometheus.HistogramVec
 	// BlockTimeSummary tracks block time with percentiles over a rolling window.
@@ -70,6 +80,11 @@ type Metrics struct {
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
+}
+
+// isDebugEnabled returns true if debug logging is enabled via environment variable
+func isDebugEnabled() bool {
+	return strings.ToLower(os.Getenv("EVMETRICS_DEBUG")) == "true"
 }
 
 type blockRange struct {
@@ -289,12 +304,72 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "endpoint", "error_type"},
 		),
+		SubmissionAttemptsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "submission_attempts_total",
+				Help:      "total number of DA submission attempts",
+			},
+			[]string{"chain_id", "type"},
+		),
+		SubmissionFailuresTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "submission_failures_total",
+				Help:      "total number of failed DA submission attempts",
+			},
+			[]string{"chain_id", "type"},
+		),
+		LastSubmissionAttemptTime: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "last_submission_attempt_time",
+				Help:      "timestamp of the last DA submission attempt",
+			},
+			[]string{"chain_id", "type"},
+		),
+		LastSuccessfulSubmissionTime: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "last_successful_submission_time",
+				Help:      "timestamp of the last successful DA submission",
+			},
+			[]string{"chain_id", "type"},
+		),
 		ranges:                  make(map[string][]*blockRange),
 		lastBlockArrivalTime:    make(map[string]time.Time),
 		lastSubmissionDurations: make(map[string]time.Duration),
 	}
 
 	return m
+}
+
+// RecordSubmissionAttempt records a submission attempt and updates related metrics
+func (m *Metrics) RecordSubmissionAttempt(chainID, submissionType string, success bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Always record the attempt
+	m.SubmissionAttemptsTotal.WithLabelValues(chainID, submissionType).Inc()
+
+	if !success {
+		m.SubmissionFailuresTotal.WithLabelValues(chainID, submissionType).Inc()
+	}
+
+	// Record timestamp of this attempt
+	now := time.Now()
+	m.LastSubmissionAttemptTime.WithLabelValues(chainID, submissionType).Set(float64(now.Unix()))
+
+	if success {
+		m.LastSuccessfulSubmissionTime.WithLabelValues(chainID, submissionType).Set(float64(now.Unix()))
+		if isDebugEnabled() {
+			log.Printf("DEBUG: Successful submission - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		}
+	} else {
+		if isDebugEnabled() {
+			log.Printf("DEBUG: Failed submission attempt - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
+		}
+	}
 }
 
 // RecordSubmissionDaHeight records the DA height only if it's higher than previously recorded
@@ -306,6 +381,15 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 		if daHeight > m.latestHeaderDaHeight {
 			m.latestHeaderDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "header").Set(float64(daHeight))
+			// Debug log when submission DA height is recorded
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Recorded header submission DA height - chain: %s, height: %d", chainID, daHeight)
+			}
+		} else {
+			// Debug log when DA height is not higher than previous
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Header DA height %d not higher than previous %d for chain %s", daHeight, m.latestHeaderDaHeight, chainID)
+			}
 		}
 		return
 	}
@@ -314,6 +398,15 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 		if daHeight > m.latestDataDaHeight {
 			m.latestDataDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "data").Set(float64(daHeight))
+			// Debug log when submission DA height is recorded
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Recorded data submission DA height - chain: %s, height: %d", chainID, daHeight)
+			}
+		} else {
+			// Debug log when DA height is not higher than previous
+			if isDebugEnabled() {
+				log.Printf("DEBUG: Data DA height %d not higher than previous %d for chain %s", daHeight, m.latestDataDaHeight, chainID)
+			}
 		}
 	}
 }
@@ -530,6 +623,7 @@ func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, durat
 
 	key := fmt.Sprintf("%s:%s", chainID, submissionType)
 	m.lastSubmissionDurations[key] = duration
+
 }
 
 // RefreshSubmissionDuration re-observes the last known submission duration to keep the metric alive.
