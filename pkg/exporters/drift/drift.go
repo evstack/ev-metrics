@@ -61,6 +61,9 @@ func (e exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
 
 			m.RecordEndpointAvailability(e.chainID, e.referenceNode, true)
 			m.RecordReferenceBlockHeight(e.chainID, e.referenceNode, refHeight)
+			// Also update time since last block metric when we see new blocks via polling
+			// This ensures the metric stays accurate even if WebSocket subscription fails
+			m.UpdateLastBlockTime(e.chainID, time.Now())
 			e.logger.Info().Uint64("height", refHeight).Str("endpoint", e.referenceNode).Msg("recorded reference node height")
 
 			// get each full node height and calculate drift
@@ -76,6 +79,10 @@ func (e exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error {
 				m.RecordEndpointAvailability(e.chainID, fullNode, true)
 				m.RecordCurrentBlockHeight(e.chainID, fullNode, currentHeight)
 				m.RecordBlockHeightDrift(e.chainID, fullNode, refHeight, currentHeight)
+
+				// Also update time since last block metric when we see new blocks via polling
+				// This ensures the metric stays accurate even if WebSocket subscription fails
+				m.UpdateLastBlockTime(e.chainID, time.Now())
 
 				drift := int64(refHeight) - int64(currentHeight)
 				e.logger.Info().

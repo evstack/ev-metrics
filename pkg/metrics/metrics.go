@@ -568,6 +568,18 @@ func (m *Metrics) RecordBlockTime(chainID string, arrivalTime time.Time) {
 	m.TimeSinceLastBlock.WithLabelValues(chainID).Set(0)
 }
 
+// UpdateLastBlockTime updates the last block arrival time and resets time since last block metric
+// without recording block time histogram. This is used by pollers that can't measure inter-block time.
+func (m *Metrics) UpdateLastBlockTime(chainID string, arrivalTime time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// update last seen arrival time
+	m.lastBlockArrivalTime[chainID] = arrivalTime
+	// reset time since last block to 0
+	m.TimeSinceLastBlock.WithLabelValues(chainID).Set(0)
+}
+
 // UpdateTimeSinceLastBlock updates the time_since_last_block metric for all chains
 // should be called periodically to keep the metric current.
 func (m *Metrics) UpdateTimeSinceLastBlock() {
