@@ -143,10 +143,12 @@ func (e *exporter) processBlocks(ctx context.Context, m *metrics.Metrics, worker
 
 func (e *exporter) onVerified(m *metrics.Metrics, namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {
 	if verified {
+		m.RecordSubmissionAttempt(e.chainID, namespace, true)
 		m.RecordSubmissionDaHeight(e.chainID, namespace, daHeight)
 		m.RemoveVerifiedBlock(e.chainID, namespace, blockHeight)
 		m.RecordSubmissionDuration(e.chainID, namespace, submissionDuration)
 	} else {
+		m.RecordSubmissionAttempt(e.chainID, namespace, false)
 		m.RecordMissingBlock(e.chainID, namespace, blockHeight)
 	}
 }
