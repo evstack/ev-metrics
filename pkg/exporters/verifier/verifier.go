@@ -78,14 +78,20 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	refreshTicker := time.NewTicker(10 * time.Second)
 	defer refreshTicker.Stop()
 
+	// shutdown cleanly unsubscribes and waits for all workers to finish.
+	// It captures sub by reference so reassignment during reconnection is reflected.
+	shutdown := func() {
+		sub.Unsubscribe()
+		close(blockQueue)
+		workerGroup.Wait()
+	}
+
 	// main subscription loop
 	for {
 		select {
 		case <-ctx.Done():
 			e.logger.Info().Msg("stopping block verification")
-			sub.Unsubscribe()
-			close(blockQueue)
-			workerGroup.Wait()
+			shutdown()
 			return nil
 		case subErr := <-sub.Err():
 			// WebSocket subscription dropped — reconnect with backoff.
@@ -124,9 +130,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			case blockQueue <- header:
 				// block queued successfully
 			case <-ctx.Done():
-				sub.Unsubscribe()
-				close(blockQueue)
-				workerGroup.Wait()
+				shutdown()
 				return nil
 			}
 		}
@@ -148,12 +152,12 @@ func (e *exporter) reconnectSubscription(ctx context.Context, headers chan *type
 
 		sub, err := e.evmClient.SubscribeNewHead(ctx, headers)
 		if err != nil {
-			e.logger.Warn().Err(err).Dur("retry_in", backoff).Msg("failed to reconnect WebSocket subscription, retrying")
 			if backoff*2 < maxBackoff {
 				backoff *= 2
 			} else {
 				backoff = maxBackoff
 			}
+			e.logger.Warn().Err(err).Dur("retry_in", backoff).Msg("failed to reconnect WebSocket subscription, retrying")
 			continue
 		}
 		return sub
@@ -317,6 +321,7 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 			e.onVerified(m, namespace, blockHeight, daHeight, true, submissionDuration)
 			return true
 		}
+		logger.Warn().Uint64("da_height", daHeight).Int("attempt", retries).Msg("header verification failed, will retry")
 
 	case "data":
 		if len(blockResultWithBlobs.DataBlob) == 0 {
