@@ -701,6 +701,25 @@ func (m *Metrics) RecordJsonRpcRequestDuration(chainID string, duration time.Dur
 	m.JsonRpcRequestDurationSummary.WithLabelValues(chainID).Observe(duration.Seconds())
 }
 
+// InitializeSubmissionMetrics pre-initializes submission-related metrics for all
+// known blob types so they are always visible in Prometheus output from startup,
+// regardless of whether any blocks have been processed yet.
+//
+// For Gauges and Counters, the label combination is registered at zero.
+// For the SubmissionDuration Summary, GetMetricWithLabelValues registers the
+// metric without making a fake observation — quantiles will show NaN and
+// count/sum will show 0, which accurately represents "no data yet".
+func (m *Metrics) InitializeSubmissionMetrics(chainID string) {
+	for _, blobType := range []string{"header", "data"} {
+		m.UnsubmittedBlocksTotal.WithLabelValues(chainID, blobType).Set(0)
+		m.SubmissionAttemptsTotal.WithLabelValues(chainID, blobType).Add(0)
+		m.SubmissionFailuresTotal.WithLabelValues(chainID, blobType).Add(0)
+		// Register the Summary without a fake observation so it is visible
+		// from startup while keeping quantile values accurate.
+		_, _ = m.SubmissionDuration.GetMetricWithLabelValues(chainID, blobType)
+	}
+}
+
 // InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges for JSON-RPC requests
 func (m *Metrics) InitializeJsonRpcSloThresholds(chainID string) {
 	m.JsonRpcRequestSloSeconds.WithLabelValues(chainID, "0.5").Set(0.2)

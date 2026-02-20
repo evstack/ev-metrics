@@ -74,6 +74,10 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 
 	e.logger.Info().Int("workers", e.workers).Msg("started verification work pool")
 
+	// pre-initialize submission metrics so both blob types are always visible
+	// in Prometheus output, even before any block has been fully processed.
+	m.InitializeSubmissionMetrics(e.chainID)
+
 	// ticker to refresh submission duration metric every 10 seconds
 	refreshTicker := time.NewTicker(10 * time.Second)
 	defer refreshTicker.Stop()
