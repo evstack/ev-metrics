@@ -10,6 +10,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/add-to-project@v1.0.2
+        id: add
         with:
           project-url: https://github.com/orgs/evstack/projects/7
           github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}
+
+      - name: Set Area to devx
+        env:
+          GH_TOKEN: ${{ secrets.ADD_TO_PROJECT_PAT }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+        run: |
+          # Get the field and option IDs for Area=devx
+          PROJECT_ID=$(gh project list --owner evstack --format json \
+            | jq -r '.projects[] | select(.number==7) | .id')
+
+          FIELD_ID=$(gh project field-list "$PROJECT_ID" --owner evstack --format json \
+            | jq -r '.fields[] | select(.name=="Area") | .id')
+
+          OPTION_ID=$(gh project field-list "$PROJECT_ID" --owner evstack --format json \
+            | jq -r '.fields[] | select(.name=="Area") | .options[] | select(.name=="devx") | .id')
+
+          gh project item-edit \
+            --owner evstack \
+            --project-number 7 \
+            --id "$ITEM_ID" \
+            --field-id "$FIELD_ID" \
+            --single-select-option-id "$OPTION_ID"
