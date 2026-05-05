@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	coreda "github.com/evstack/ev-node/core/da"
-	"github.com/evstack/ev-node/da/jsonrpc"
+	libshare "github.com/celestiaorg/go-square/v3/share"
+	"github.com/evstack/ev-node/pkg/da/jsonrpc"
 	evnode "github.com/evstack/ev-node/types/pb/evnode/v1"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
@@ -26,7 +26,7 @@ type Client struct {
 
 func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*Client, error) {
 	// Use ev-node's DA client (which connects to celestia-node)
-	client, err := jsonrpc.NewClient(ctx, logger, url, token, 0.0, 1.0, 1970176)
+	client, err := jsonrpc.NewClient(ctx, url, token, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create celestia client: %w", err)
 	}
@@ -40,100 +40,68 @@ func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*
 
 // GetBlobsAtHeight retrieves all blobs at a specific DA height and namespace
 func (c *Client) GetBlobsAtHeight(ctx context.Context, daHeight uint64, namespace []byte) ([][]byte, error) {
-	// get blob IDs
-	result, err := c.DA.GetIDs(ctx, daHeight, namespace)
+	ns, err := libshare.NewNamespaceFromBytes(namespace)
+	if err != nil {
+		return nil, fmt.Errorf("invalid namespace: %w", err)
+	}
+
+	blobs, err := c.Blob.GetAll(ctx, daHeight, []libshare.Namespace{ns})
 	if err != nil {
 		if strings.Contains(err.Error(), "blob: not found") {
-			return nil, nil // No blobs at this height
+			return nil, nil
 		}
 		if strings.Contains(err.Error(), "future") {
 			return nil, fmt.Errorf("DA height %d is in the future", daHeight)
 		}
-		return nil, fmt.Errorf("failed to get blob IDs: %w", err)
-	}
-
-	if result == nil || len(result.IDs) == 0 {
-		return nil, nil
-	}
-
-	// get actual blob data
-	blobs, err := c.DA.Get(ctx, result.IDs, namespace)
-	if err != nil {
 		return nil, fmt.Errorf("failed to get blobs: %w", err)
 	}
 
-	return blobs, nil
+	result := make([][]byte, len(blobs))
+	for i, b := range blobs {
+		result[i] = b.Data()
+	}
+	return result, nil
 }
 
 // VerifyBlobAtHeight verifies that a specific blob exists at the given DA height
-// by computing its commitment and checking if it matches any commitment at that height
+// by computing its commitment and fetching it directly from Celestia.
 func (c *Client) VerifyBlobAtHeight(ctx context.Context, blob []byte, daHeight uint64, namespace []byte) (bool, error) {
 	if len(blob) == 0 {
 		return true, nil // empty blobs are valid (nothing to verify)
 	}
 
-	// compute commitment for our blob
-	commitments, err := c.DA.Commit(ctx, [][]byte{blob}, namespace)
+	ns, err := libshare.NewNamespaceFromBytes(namespace)
 	if err != nil {
-		return false, fmt.Errorf("failed to compute commitment: %w", err)
+		return false, fmt.Errorf("invalid namespace: %w", err)
 	}
 
-	if len(commitments) == 0 {
-		return false, fmt.Errorf("no commitment generated")
+	b, err := jsonrpc.NewBlobV0(ns, blob)
+	if err != nil {
+		return false, fmt.Errorf("failed to create blob for commitment: %w", err)
 	}
 
-	commitment := commitments[0]
 	c.logger.Debug().
-		Str("our_commitment", fmt.Sprintf("%x", commitment)).
-		Int("commitment_size", len(commitment)).
+		Str("commitment", fmt.Sprintf("%x", b.Commitment)).
 		Int("blob_size", len(blob)).
 		Uint64("da_height", daHeight).
-		Msg("computed commitment for blob")
+		Msg("fetching blob by commitment from Celestia")
 
-	// get all IDs at the DA height
-	result, err := c.DA.GetIDs(ctx, daHeight, namespace)
+	result, err := c.Blob.Get(ctx, daHeight, ns, b.Commitment)
 	if err != nil {
-		// TODO: don't check string, use concrete error type
 		if strings.Contains(err.Error(), "blob: not found") {
-			c.logger.Debug().Uint64("da_height", daHeight).Msg("no blobs found at DA height")
-			return false, nil // no blobs at this height
+			c.logger.Debug().Uint64("da_height", daHeight).Msg("blob not found at DA height")
+			return false, nil
 		}
-		return false, fmt.Errorf("failed to get IDs: %w", err)
+		return false, fmt.Errorf("failed to get blob: %w", err)
 	}
 
-	if result == nil || len(result.IDs) == 0 {
-		c.logger.Debug().Uint64("da_height", daHeight).Msg("no IDs returned")
-		return false, nil
+	if result != nil {
+		c.logger.Info().
+			Str("commitment", fmt.Sprintf("%x", b.Commitment)).
+			Msg("blob verified on Celestia")
 	}
 
-	c.logger.Debug().
-		Int("num_ids", len(result.IDs)).
-		Uint64("da_height", daHeight).
-		Msg("checking commitments from Celestia")
-
-	// check if our commitment matches any commitment at this height
-	// ID format: height (8 bytes) + commitment
-	for i, id := range result.IDs {
-		_, cmt, err := coreda.SplitID(id)
-		if err != nil {
-			c.logger.Warn().Err(err).Msg("failed to split ID")
-			continue
-		}
-
-		if equal := bytes.Equal(commitment, cmt); equal {
-			c.logger.Info().
-				Int("blob_index", i).
-				Str("cmt", fmt.Sprintf("%x", cmt)).
-				Msg("found matching commitment")
-			return true, nil
-		}
-	}
-
-	c.logger.Warn().
-		Str("commitment", fmt.Sprintf("%x", commitment)).
-		Int("checked_blobs", len(result.IDs)).
-		Msg("no matching commitment found")
-	return false, nil
+	return result != nil, nil
 }
 
 // VerifyDataBlobAtHeight verifies a data blob, accounting for the SignedData wrapper

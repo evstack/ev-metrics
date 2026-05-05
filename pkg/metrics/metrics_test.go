@@ -672,7 +672,7 @@ func TestMetrics_RecordSubmissionAttempt(t *testing.T) {
 						}
 					}
 				}
-					if match && len(m.GetLabel()) == 2 {
+				if match && len(m.GetLabel()) == 2 {
 					successMetricFoundData = true
 					if m.GetGauge() != nil {
 						lastSuccessTimeData = m.GetGauge().GetValue()
