@@ -1,17 +1,20 @@
 package drift
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/evstack/ev-metrics/pkg/metrics"
+	"github.com/evstack/ev-metrics/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -146,4 +149,74 @@ func TestExportMetrics_HungFullNodeDoesNotBlockOthers(t *testing.T) {
 		avail, ok := gaugeValue(t, reg, "test_endpoint_availability", hung.URL)
 		return ok && avail == 0
 	}, 3*time.Second, 20*time.Millisecond)
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestExportMetrics_EndpointSecretsNeverExposed(t *testing.T) {
+	const secret = "SECRET_API_KEY"
+	var height atomic.Uint64
+	height.Store(10)
+	ref := newBlockNumberServer(t, &height)
+	good := newBlockNumberServer(t, &height)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+
+	refURL := ref.URL + "/v2/" + secret
+	goodURL := "http://user:" + secret + "@" + good.Listener.Addr().String() + "/v2/" + secret + "?token=" + secret
+	deadSecretURL := deadURL + "/v2/" + secret
+
+	var logs syncBuffer
+	logger := zerolog.New(&logs).Level(zerolog.DebugLevel)
+	reg := prometheus.NewRegistry()
+	m := metrics.NewWithRegistry("test", reg)
+	e := NewMetricsExporter("chain", refURL, []string{goodURL, deadSecretURL}, 60, logger).(*exporter)
+	e.rpcTimeout = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = e.ExportMetrics(ctx, m)
+	}()
+
+	deadLabel := utils.RedactEndpoint(deadURL)
+	require.Eventually(t, func() bool {
+		avail, ok := gaugeValue(t, reg, "test_endpoint_availability", deadLabel)
+		return ok && avail == 0
+	}, 3*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, ok := gaugeValue(t, reg, "test_block_height_drift", utils.RedactEndpoint(goodURL))
+		return ok
+	}, 3*time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		for _, metric := range mf.GetMetric() {
+			for _, l := range metric.GetLabel() {
+				require.NotContains(t, l.GetValue(), secret, "metric %s label %s", mf.GetName(), l.GetName())
+			}
+		}
+	}
+	require.NotContains(t, logs.String(), secret)
+	require.Contains(t, logs.String(), "failed to get block number")
 }

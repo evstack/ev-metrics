@@ -18,10 +18,13 @@ const defaultRPCTimeout = 5 * time.Second
 
 // NewMetricsExporter creates and returns a metrics exporter for monitoring block height drift across multiple nodes.
 func NewMetricsExporter(chainID, referenceNode string, fullNodes []string, pollingInterval int, logger zerolog.Logger) metrics.Exporter {
+	labels := utils.RedactEndpoints(append([]string{referenceNode}, fullNodes...))
 	return &exporter{
 		chainID:         chainID,
 		referenceNode:   referenceNode,
+		referenceLabel:  labels[0],
 		fullNodes:       fullNodes,
+		fullNodeLabels:  labels[1:],
 		pollingInterval: pollingInterval,
 		rpcTimeout:      defaultRPCTimeout,
 		logger:          logger.With().Str("component", "drift_monitor").Logger(),
@@ -32,7 +35,9 @@ func NewMetricsExporter(chainID, referenceNode string, fullNodes []string, polli
 type exporter struct {
 	chainID         string
 	referenceNode   string
+	referenceLabel  string
 	fullNodes       []string
+	fullNodeLabels  []string
 	pollingInterval int
 	rpcTimeout      time.Duration
 	logger          zerolog.Logger
@@ -40,9 +45,11 @@ type exporter struct {
 }
 
 // node holds a lazily dialed client for one endpoint. Polls never overlap, so a node is
-// only ever used by one goroutine at a time.
+// only ever used by one goroutine at a time. url is only for dialing; label is the redacted
+// form used in metrics and logs.
 type node struct {
 	url    string
+	label  string
 	client *ethclient.Client
 }
 
@@ -59,10 +66,10 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	ticker := time.NewTicker(time.Duration(e.pollingInterval) * time.Second)
 	defer ticker.Stop()
 
-	ref := &node{url: e.referenceNode}
+	ref := &node{url: e.referenceNode, label: e.referenceLabel}
 	fullNodes := make([]*node, len(e.fullNodes))
 	for i, url := range e.fullNodes {
-		fullNodes[i] = &node{url: url}
+		fullNodes[i] = &node{url: url, label: e.fullNodeLabels[i]}
 	}
 	defer func() {
 		ref.close()
@@ -72,8 +79,8 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	}()
 
 	e.logger.Info().
-		Str("reference_node", e.referenceNode).
-		Strs("full_nodes", e.fullNodes).
+		Str("reference_node", e.referenceLabel).
+		Strs("full_nodes", e.fullNodeLabels).
 		Int("polling_interval_sec", e.pollingInterval).
 		Msg("starting node drift monitoring")
 
@@ -93,21 +100,21 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 func (e *exporter) poll(ctx context.Context, m *metrics.Metrics, ref *node, fullNodes []*node) {
 	refHeight, err := e.blockHeight(ctx, ref)
 	if err != nil {
-		e.logger.Error().Err(err).Str("endpoint", ref.url).Msg("failed to get reference node block height")
-		m.RecordEndpointAvailability(e.chainID, ref.url, false)
-		m.RecordEndpointError(e.chainID, ref.url, utils.CategorizeError(err))
+		e.logger.Error().Err(err).Str("endpoint", ref.label).Msg("failed to get reference node block height")
+		m.RecordEndpointAvailability(e.chainID, ref.label, false)
+		m.RecordEndpointError(e.chainID, ref.label, utils.CategorizeError(err))
 		return
 	}
 
-	m.RecordEndpointAvailability(e.chainID, ref.url, true)
-	m.RecordReferenceBlockHeight(e.chainID, ref.url, refHeight)
+	m.RecordEndpointAvailability(e.chainID, ref.label, true)
+	m.RecordReferenceBlockHeight(e.chainID, ref.label, refHeight)
 	// Also update time since last block metric when we see new blocks via polling
 	// This ensures the metric stays accurate even if WebSocket subscription fails
 	if refHeight > e.lastHeight {
 		m.UpdateLastBlockTime(e.chainID, time.Now())
 		e.lastHeight = refHeight
 	}
-	e.logger.Debug().Uint64("height", refHeight).Str("endpoint", ref.url).Msg("recorded reference node height")
+	e.logger.Debug().Uint64("height", refHeight).Str("endpoint", ref.label).Msg("recorded reference node height")
 
 	var wg sync.WaitGroup
 	for _, n := range fullNodes {
@@ -123,21 +130,21 @@ func (e *exporter) poll(ctx context.Context, m *metrics.Metrics, ref *node, full
 func (e *exporter) pollFullNode(ctx context.Context, m *metrics.Metrics, n *node, refHeight uint64) {
 	currentHeight, err := e.blockHeight(ctx, n)
 	if err != nil {
-		e.logger.Error().Err(err).Str("endpoint", n.url).Msg("failed to get full node block height")
-		m.RecordEndpointAvailability(e.chainID, n.url, false)
-		m.RecordEndpointError(e.chainID, n.url, utils.CategorizeError(err))
+		e.logger.Error().Err(err).Str("endpoint", n.label).Msg("failed to get full node block height")
+		m.RecordEndpointAvailability(e.chainID, n.label, false)
+		m.RecordEndpointError(e.chainID, n.label, utils.CategorizeError(err))
 		return
 	}
 
-	m.RecordEndpointAvailability(e.chainID, n.url, true)
-	m.RecordCurrentBlockHeight(e.chainID, n.url, currentHeight)
-	m.RecordBlockHeightDrift(e.chainID, n.url, refHeight, currentHeight)
+	m.RecordEndpointAvailability(e.chainID, n.label, true)
+	m.RecordCurrentBlockHeight(e.chainID, n.label, currentHeight)
+	m.RecordBlockHeightDrift(e.chainID, n.label, refHeight, currentHeight)
 
 	e.logger.Debug().
 		Uint64("ref_height", refHeight).
 		Uint64("target_height", currentHeight).
 		Int64("drift", int64(refHeight)-int64(currentHeight)).
-		Str("endpoint", n.url).
+		Str("endpoint", n.label).
 		Msg("recorded full node height and drift")
 }
 
@@ -150,7 +157,7 @@ func (e *exporter) blockHeight(ctx context.Context, n *node) (uint64, error) {
 	if n.client == nil {
 		client, err := ethclient.DialContext(ctx, n.url)
 		if err != nil {
-			return 0, fmt.Errorf("failed to connect to %s: %w", n.url, err)
+			return 0, utils.RedactError(fmt.Errorf("failed to connect to %s: %w", n.label, err), n.url)
 		}
 		n.client = client
 	}
@@ -158,7 +165,7 @@ func (e *exporter) blockHeight(ctx context.Context, n *node) (uint64, error) {
 	height, err := n.client.BlockNumber(ctx)
 	if err != nil {
 		n.close()
-		return 0, fmt.Errorf("failed to get block number from %s: %w", n.url, err)
+		return 0, utils.RedactError(fmt.Errorf("failed to get block number from %s: %w", n.label, err), n.url)
 	}
 
 	return height, nil

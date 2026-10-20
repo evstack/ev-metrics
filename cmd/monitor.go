@@ -19,6 +19,7 @@ import (
 	"github.com/evstack/ev-metrics/pkg/exporters/jsonrpc"
 	"github.com/evstack/ev-metrics/pkg/exporters/verifier"
 	"github.com/evstack/ev-metrics/pkg/metrics"
+	"github.com/evstack/ev-metrics/pkg/utils"
 	coreda "github.com/evstack/ev-node/pkg/da/types"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
@@ -255,7 +256,7 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 
 		logger.Info().
 			Strs("addresses", addressList).
-			Strs("rpc_urls", rpcUrls).
+			Strs("rpc_urls", utils.RedactEndpoints(rpcUrls)).
 			Int("scrape_interval", flags.balanceScrapeInterval).
 			Msg("balance monitoring enabled")
 	}
