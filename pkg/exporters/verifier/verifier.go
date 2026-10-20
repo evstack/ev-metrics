@@ -86,7 +86,6 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	// It captures sub by reference so reassignment during reconnection is reflected.
 	shutdown := func() {
 		sub.Unsubscribe()
-		close(blockQueue)
 		workerGroup.Wait()
 	}
 
@@ -108,7 +107,6 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			newSub := e.reconnectSubscription(ctx, headers)
 			if newSub == nil {
 				// context was cancelled during reconnection
-				close(blockQueue)
 				workerGroup.Wait()
 				return nil
 			}
@@ -173,26 +171,32 @@ func (e *exporter) processBlocks(ctx context.Context, m *metrics.Metrics, worker
 	logger := e.logger.With().Int("worker_id", workerID).Logger()
 	logger.Debug().Msg("worker started")
 
-	for header := range blockQueue {
-		reEnqueue := e.verifyBlock(ctx, m, header)
-		if reEnqueue {
-			// re-queue with delay in background
-			go func(h *types.Header) {
-				select {
-				case <-time.After(5 * time.Minute):
+	// blockQueue is never closed: delayed re-queue goroutines may still send to it,
+	// so workers exit on ctx cancellation instead.
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Debug().Msg("worker stopped")
+			return
+		case header := <-blockQueue:
+			reEnqueue := e.verifyBlock(ctx, m, header)
+			if reEnqueue {
+				// re-queue with delay in background
+				go func(h *types.Header) {
 					select {
-					case blockQueue <- h:
-						logger.Debug().Uint64("block", h.Number.Uint64()).Msg("re-queued block after cooldown")
+					case <-time.After(5 * time.Minute):
+						select {
+						case blockQueue <- h:
+							logger.Debug().Uint64("block", h.Number.Uint64()).Msg("re-queued block after cooldown")
+						case <-ctx.Done():
+							// graceful shutdown, don't send
+						}
 					case <-ctx.Done():
-						// graceful shutdown, don't send
 					}
-				case <-ctx.Done():
-				}
-			}(header)
+				}(header)
+			}
 		}
 	}
-
-	logger.Debug().Msg("worker stopped")
 }
 
 func (e *exporter) onVerified(m *metrics.Metrics, namespace string, blockHeight, daHeight uint64, verified bool, submissionDuration time.Duration) {
