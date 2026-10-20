@@ -25,12 +25,16 @@ type Client struct {
 
 // parseEndpoint converts an endpoint URL into a gRPC "host:port" target and reports whether TLS
 // should be used. https:// endpoints use TLS and default to port 443; http:// and bare host:port
-// endpoints are plaintext. Any path is dropped.
+// endpoints are plaintext. Userinfo, path, query and fragment are dropped, so credentials in the URL
+// never reach the dial target, the logs or error messages.
 func parseEndpoint(endpoint string) (target string, useTLS bool) {
 	useTLS = strings.HasPrefix(endpoint, "https://")
 	target = strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")
-	if i := strings.IndexByte(target, '/'); i >= 0 {
+	if i := strings.IndexAny(target, "/?#"); i >= 0 {
 		target = target[:i]
+	}
+	if i := strings.LastIndexByte(target, '@'); i >= 0 {
+		target = target[i+1:]
 	}
 	if useTLS {
 		if _, _, err := net.SplitHostPort(target); err != nil {

@@ -18,20 +18,19 @@ type Exporter interface {
 }
 
 // StartServer starts an HTTP server to expose Prometheus metrics and a health check endpoint.
+// /health is a readiness check: it fails until the header subscription is up, while it is
+// down, and (when healthMaxHeaderAge > 0) when no header has arrived within that duration.
 // The server shuts down gracefully when the context is cancelled.
-func StartServer(ctx context.Context, metricsPath string, port int, logger zerolog.Logger, exporters ...Exporter) error {
+func StartServer(ctx context.Context, metricsPath string, port int, healthMaxHeaderAge time.Duration, logger zerolog.Logger, exporters ...Exporter) error {
 	// create logger with component field
 	logger = logger.With().Str("component", "http_server").Logger()
 
-	mux := http.NewServeMux()
-	mux.Handle(metricsPath, promhttp.Handler())
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
-
 	// initialize metrics (thread-safe, shared across all exporters)
 	m := New("ev_metrics")
+
+	mux := http.NewServeMux()
+	mux.Handle(metricsPath, promhttp.Handler())
+	mux.HandleFunc("/health", healthHandler(m, healthMaxHeaderAge))
 
 	// derived ctx is cancelled when any exporter or the server fails, stopping everything else
 	g, ctx := errgroup.WithContext(ctx)
@@ -84,4 +83,15 @@ func StartServer(ctx context.Context, metricsPath string, port int, logger zerol
 	})
 
 	return g.Wait()
+}
+
+func healthHandler(m *Metrics, maxHeaderAge time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		ok, reason := m.CheckHealth(maxHeaderAge)
+		if !ok {
+			http.Error(w, reason, http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("OK"))
+	}
 }

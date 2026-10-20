@@ -547,20 +547,26 @@ func TestMetrics_RecordSubmissionDuration(t *testing.T) {
 	m.RecordSubmissionDuration("chain1", "data", 10*time.Second)
 	m.RecordSubmissionDuration("chain2", "header", 3*time.Second)
 
-	// verify stored in memory
-	require.Equal(t, 6*time.Second, m.lastSubmissionDurations["chain1:header"], "last submission duration should be present")
-	require.Equal(t, 10*time.Second, m.lastSubmissionDurations["chain1:data"])
-	require.Equal(t, 3*time.Second, m.lastSubmissionDurations["chain2:header"])
-}
+	// the gauge holds the latest value per chain and type
+	last := func(chain, typ string) float64 {
+		return getMetricValue(t, reg, "test_last_submission_duration_seconds", map[string]string{"chain_id": chain, "type": typ})
+	}
+	require.Equal(t, 6.0, last("chain1", "header"), "last submission duration should be the most recent one")
+	require.Equal(t, 10.0, last("chain1", "data"))
+	require.Equal(t, 3.0, last("chain2", "header"))
 
-func TestMetrics_RefreshSubmissionDuration_Empty(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := NewWithRegistry("test", reg)
-
-	// call refresh without any recorded values - should not panic
-	require.NotPanics(t, func() {
-		m.RefreshSubmissionDuration()
-	})
+	// the summary only counts real observations: 4 calls above, none fabricated
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var count uint64
+	for _, mf := range families {
+		if mf.GetName() == "test_submission_duration_seconds" {
+			for _, metric := range mf.GetMetric() {
+				count += metric.GetSummary().GetSampleCount()
+			}
+		}
+	}
+	require.EqualValues(t, 4, count)
 }
 
 func TestMetrics_RecordSubmissionAttempt(t *testing.T) {
@@ -750,4 +756,82 @@ func getMetricValue(t *testing.T, reg *prometheus.Registry, metricName string, l
 	}
 	t.Fatalf("metric %s not found with labels %v", metricName, labels)
 	return 0
+}
+
+func gatheredValue(t *testing.T, reg *prometheus.Registry, name string) (float64, bool) {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		require.Len(t, mf.GetMetric(), 1)
+		m := mf.GetMetric()[0]
+		if m.Gauge != nil {
+			return m.GetGauge().GetValue(), true
+		}
+		return m.GetCounter().GetValue(), true
+	}
+	return 0, false
+}
+
+func TestMetrics_VerifierSelfObservability(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewWithRegistry("test", reg)
+	names := []string{
+		"test_verifier_queue_length",
+		"test_verifier_inflight_blocks",
+		"test_ws_reconnects_total",
+		"test_last_header_received_timestamp",
+		"test_verifier_backfilled_blocks_total",
+		"test_verifier_backfill_dropped_total",
+	}
+
+	m.InitializeVerifierMetrics("chain")
+	for _, name := range names {
+		v, ok := gatheredValue(t, reg, name)
+		require.True(t, ok, name)
+		require.Zero(t, v, name)
+	}
+
+	m.SetVerifierQueueLength("chain", 7)
+	m.AddInflightBlocks("chain", 1)
+	m.AddInflightBlocks("chain", 1)
+	m.AddInflightBlocks("chain", -1)
+	m.RecordWsReconnect("chain")
+	m.RecordWsReconnect("chain")
+	m.RecordHeaderReceived("chain", time.Unix(1700000000, 0))
+	m.RecordBackfill("chain", 3)
+	m.RecordBackfillDropped("chain", 5)
+
+	for name, want := range map[string]float64{
+		"test_verifier_queue_length":            7,
+		"test_verifier_inflight_blocks":         1,
+		"test_ws_reconnects_total":              2,
+		"test_last_header_received_timestamp":   1700000000,
+		"test_verifier_backfilled_blocks_total": 3,
+		"test_verifier_backfill_dropped_total":  5,
+	} {
+		v, ok := gatheredValue(t, reg, name)
+		require.True(t, ok, name)
+		require.Equal(t, want, v, name)
+	}
+}
+
+func TestMetrics_CheckHealth(t *testing.T) {
+	m := NewWithRegistry("test", prometheus.NewRegistry())
+
+	ok, reason := m.CheckHealth(0)
+	require.False(t, ok)
+	require.Contains(t, reason, "not ready")
+
+	m.SetSubscriptionUp(true)
+	ok, _ = m.CheckHealth(0)
+	require.True(t, ok)
+
+	m.SetSubscriptionUp(false)
+	ok, reason = m.CheckHealth(0)
+	require.False(t, ok)
+	require.Contains(t, reason, "down")
 }

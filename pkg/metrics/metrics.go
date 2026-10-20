@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,7 +29,10 @@ type Metrics struct {
 	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
 	BlockHeightDrift *prometheus.GaugeVec
 	// SubmissionDuration tracks DA blob submission duration percentiles over a rolling window.
+	// Only real observations are recorded, so quantiles are NaN while no submission is verified.
 	SubmissionDuration *prometheus.SummaryVec
+	// LastSubmissionDuration tracks the duration of the most recently verified submission.
+	LastSubmissionDuration *prometheus.GaugeVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
 	// SubmissionAttemptsTotal tracks the total number of submission attempts.
@@ -68,15 +72,31 @@ type Metrics struct {
 	// ConsensusRpcEndpointErrors tracks consensus RPC endpoint errors by type.
 	ConsensusRpcEndpointErrors *prometheus.CounterVec
 
+	// VerifierQueueLength tracks the number of blocks waiting in the verifier queue.
+	VerifierQueueLength *prometheus.GaugeVec
+	// VerifierInflightBlocks tracks blocks between their first verification attempt and being verified or exhausted.
+	VerifierInflightBlocks *prometheus.GaugeVec
+	// WsReconnectsTotal tracks successful re-subscriptions of the block header WebSocket.
+	WsReconnectsTotal *prometheus.CounterVec
+	// LastHeaderReceivedTimestamp tracks the unix time at which the last header arrived from the subscription.
+	LastHeaderReceivedTimestamp *prometheus.GaugeVec
+	// VerifierBackfilledBlocksTotal tracks blocks enqueued to cover gaps in the header subscription.
+	VerifierBackfilledBlocksTotal *prometheus.CounterVec
+	// VerifierBackfillDroppedTotal tracks blocks skipped because a gap exceeded the backfill cap.
+	VerifierBackfillDroppedTotal *prometheus.CounterVec
+
+	// health state read by the /health endpoint
+	subscriptionUp     atomic.Bool
+	subscriptionSeen   atomic.Bool
+	subscriptionSince  atomic.Int64 // unix nanos of the first established subscription
+	lastHeaderReceived atomic.Int64 // unix nanos
+
 	// internal tracking to ensure we only record increasing DA heights
 	latestHeaderDaHeight uint64
 	latestDataDaHeight   uint64
 
 	// internal tracking for block time calculation (uses arrival time for ms precision)
 	lastBlockArrivalTime map[string]time.Time // key: chainID
-
-	// lastSubmissionDurations tracks the most recent submission durations.
-	lastSubmissionDurations map[string]time.Duration // key: chainID:namespace
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -162,6 +182,14 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				},
 				MaxAge:     60 * time.Second,
 				AgeBuckets: 6,
+			},
+			[]string{"chain_id", "type"},
+		),
+		LastSubmissionDuration: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "last_submission_duration_seconds",
+				Help:      "duration from block creation to da availability of the most recently verified submission",
 			},
 			[]string{"chain_id", "type"},
 		),
@@ -336,9 +364,56 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id", "type"},
 		),
-		ranges:                  make(map[string][]*blockRange),
-		lastBlockArrivalTime:    make(map[string]time.Time),
-		lastSubmissionDurations: make(map[string]time.Duration),
+		VerifierQueueLength: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "verifier_queue_length",
+				Help:      "number of blocks waiting in the verifier queue",
+			},
+			[]string{"chain_id"},
+		),
+		VerifierInflightBlocks: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "verifier_inflight_blocks",
+				Help:      "number of blocks being verified, including those waiting for a retry",
+			},
+			[]string{"chain_id"},
+		),
+		WsReconnectsTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "ws_reconnects_total",
+				Help:      "total number of successful block header WebSocket re-subscriptions",
+			},
+			[]string{"chain_id"},
+		),
+		LastHeaderReceivedTimestamp: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "last_header_received_timestamp",
+				Help:      "unix timestamp in seconds of the last block header received from the subscription",
+			},
+			[]string{"chain_id"},
+		),
+		VerifierBackfilledBlocksTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "verifier_backfilled_blocks_total",
+				Help:      "total number of blocks backfilled after gaps in the header subscription",
+			},
+			[]string{"chain_id"},
+		),
+		VerifierBackfillDroppedTotal: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: namespace,
+				Name:      "verifier_backfill_dropped_total",
+				Help:      "total number of blocks skipped because a subscription gap exceeded the backfill cap",
+			},
+			[]string{"chain_id"},
+		),
+		ranges:               make(map[string][]*blockRange),
+		lastBlockArrivalTime: make(map[string]time.Time),
 	}
 
 	return m
@@ -616,28 +691,8 @@ func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referen
 
 // RecordSubmissionDuration records the da submission duration for a given submission type
 func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, duration time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.SubmissionDuration.WithLabelValues(chainID, submissionType).Observe(duration.Seconds())
-
-	key := fmt.Sprintf("%s:%s", chainID, submissionType)
-	m.lastSubmissionDurations[key] = duration
-
-}
-
-// RefreshSubmissionDuration re-observes the last known submission duration to keep the metric alive.
-func (m *Metrics) RefreshSubmissionDuration() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for key, duration := range m.lastSubmissionDurations {
-		// assuming format "chainID:namespace"
-		parts := strings.Split(key, ":")
-		if len(parts) == 2 {
-			m.SubmissionDuration.WithLabelValues(parts[0], parts[1]).Observe(duration.Seconds())
-		}
-	}
+	m.LastSubmissionDuration.WithLabelValues(chainID, submissionType).Set(duration.Seconds())
 }
 
 // RecordBlockTime records the time between consecutive blocks using arrival time
@@ -718,6 +773,77 @@ func (m *Metrics) InitializeSubmissionMetrics(chainID string) {
 		// from startup while keeping quantile values accurate.
 		_, _ = m.SubmissionDuration.GetMetricWithLabelValues(chainID, blobType)
 	}
+}
+
+// InitializeVerifierMetrics pre-initializes the verifier self-observability metrics
+// so they are visible from startup. The last header timestamp stays 0 until the
+// first header arrives.
+func (m *Metrics) InitializeVerifierMetrics(chainID string) {
+	m.VerifierQueueLength.WithLabelValues(chainID).Set(0)
+	m.VerifierInflightBlocks.WithLabelValues(chainID).Set(0)
+	m.WsReconnectsTotal.WithLabelValues(chainID).Add(0)
+	m.LastHeaderReceivedTimestamp.WithLabelValues(chainID).Set(0)
+	m.VerifierBackfilledBlocksTotal.WithLabelValues(chainID).Add(0)
+	m.VerifierBackfillDroppedTotal.WithLabelValues(chainID).Add(0)
+}
+
+// SetVerifierQueueLength records the current verifier queue length.
+func (m *Metrics) SetVerifierQueueLength(chainID string, n int) {
+	m.VerifierQueueLength.WithLabelValues(chainID).Set(float64(n))
+}
+
+// AddInflightBlocks adjusts the in-flight verification gauge by delta.
+func (m *Metrics) AddInflightBlocks(chainID string, delta float64) {
+	m.VerifierInflightBlocks.WithLabelValues(chainID).Add(delta)
+}
+
+// RecordWsReconnect counts a re-established header subscription.
+func (m *Metrics) RecordWsReconnect(chainID string) {
+	m.WsReconnectsTotal.WithLabelValues(chainID).Inc()
+}
+
+// RecordBackfill counts blocks enqueued by a backfill.
+func (m *Metrics) RecordBackfill(chainID string, enqueued uint64) {
+	m.VerifierBackfilledBlocksTotal.WithLabelValues(chainID).Add(float64(enqueued))
+}
+
+// RecordBackfillDropped counts blocks skipped because a gap exceeded the backfill cap.
+func (m *Metrics) RecordBackfillDropped(chainID string, dropped uint64) {
+	m.VerifierBackfillDroppedTotal.WithLabelValues(chainID).Add(float64(dropped))
+}
+
+// SetSubscriptionUp records whether the block header subscription is currently established.
+func (m *Metrics) SetSubscriptionUp(up bool) {
+	if up && m.subscriptionSeen.CompareAndSwap(false, true) {
+		m.subscriptionSince.Store(time.Now().UnixNano())
+	}
+	m.subscriptionUp.Store(up)
+}
+
+// RecordHeaderReceived records the arrival of a block header from the subscription.
+func (m *Metrics) RecordHeaderReceived(chainID string, t time.Time) {
+	m.lastHeaderReceived.Store(t.UnixNano())
+	m.LastHeaderReceivedTimestamp.WithLabelValues(chainID).Set(float64(t.Unix()))
+}
+
+// CheckHealth reports whether the monitor is ready. It fails until a subscription
+// has been established, while the subscription is down, and, when maxHeaderAge is
+// positive, when no header has arrived for longer than maxHeaderAge (measured from
+// the first subscription if no header has arrived yet).
+func (m *Metrics) CheckHealth(maxHeaderAge time.Duration) (bool, string) {
+	if !m.subscriptionSeen.Load() {
+		return false, "not ready: block header subscription not established"
+	}
+	if !m.subscriptionUp.Load() {
+		return false, "block header subscription is down"
+	}
+	if maxHeaderAge > 0 {
+		last := max(m.lastHeaderReceived.Load(), m.subscriptionSince.Load())
+		if age := time.Since(time.Unix(0, last)); age > maxHeaderAge {
+			return false, fmt.Sprintf("no block header received for %s (limit %s)", age.Round(time.Second), maxHeaderAge)
+		}
+	}
+	return true, ""
 }
 
 // InitializeJsonRpcSloThresholds initializes the constant SLO threshold gauges for JSON-RPC requests

@@ -27,6 +27,7 @@ func NewMetricsExporter(
 		chainID:        chainID,
 		addresses:      addresses,
 		endpoints:      endpoints,
+		labels:         utils.RedactEndpoints(endpoints),
 		scrapeInterval: scrapeInterval,
 		rpcTimeout:     defaultRPCTimeout,
 		logger:         logger.With().Str("component", "balance_monitor").Logger(),
@@ -38,6 +39,7 @@ type exporter struct {
 	chainID        string
 	addresses      []string
 	endpoints      []string
+	labels         []string
 	scrapeInterval int
 	rpcTimeout     time.Duration
 	logger         zerolog.Logger
@@ -60,7 +62,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 
 	e.logger.Info().
 		Strs("addresses", e.addresses).
-		Strs("endpoints", e.endpoints).
+		Strs("endpoints", e.labels).
 		Int("scrape_interval_sec", e.scrapeInterval).
 		Msg("starting balance monitoring")
 
@@ -82,16 +84,17 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, clients []*cosmos.Client, address string) {
 	// try each endpoint until one succeeds
 	for i, endpoint := range e.endpoints {
+		label := e.labels[i]
 		if clients[i] == nil {
 			client, err := cosmos.NewClient(endpoint, e.logger)
 			if err != nil {
 				e.logger.Warn().
-					Err(err).
-					Str("endpoint", endpoint).
+					Err(utils.RedactError(err, endpoint)).
+					Str("endpoint", label).
 					Str("address", address).
 					Msg("failed to create client, trying next endpoint")
-				m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
-				m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
+				m.RecordConsensusRpcEndpointAvailability(e.chainID, label, false)
+				m.RecordConsensusRpcEndpointError(e.chainID, label, utils.CategorizeError(err))
 				continue
 			}
 			clients[i] = client
@@ -103,17 +106,17 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, clients
 
 		if err != nil {
 			e.logger.Warn().
-				Err(err).
-				Str("endpoint", endpoint).
+				Err(utils.RedactError(err, endpoint)).
+				Str("endpoint", label).
 				Str("address", address).
 				Msg("failed to query balance, trying next endpoint")
-			m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
-			m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
+			m.RecordConsensusRpcEndpointAvailability(e.chainID, label, false)
+			m.RecordConsensusRpcEndpointError(e.chainID, label, utils.CategorizeError(err))
 			continue
 		}
 
 		// success - record availability
-		m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, true)
+		m.RecordConsensusRpcEndpointAvailability(e.chainID, label, true)
 
 		// record balances for each denom
 		for _, coin := range balances {
@@ -135,7 +138,7 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, clients
 				Str("address", address).
 				Str("denom", coin.Denom).
 				Float64("balance", balanceFloat).
-				Str("endpoint", endpoint).
+				Str("endpoint", label).
 				Msg("recorded account balance")
 		}
 

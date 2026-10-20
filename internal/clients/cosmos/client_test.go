@@ -17,6 +17,9 @@ func TestParseEndpoint(t *testing.T) {
 		{"https://h:443/path", "h:443", true},
 		{"https://h:9443", "h:9443", true},
 		{"h:9090", "h:9090", false},
+		{"https://user:pass@h:9443/p", "h:9443", true},
+		{"http://user:pass@h:9090", "h:9090", false},
+		{"https://h?key=SECRET", "h:443", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.endpoint, func(t *testing.T) {
