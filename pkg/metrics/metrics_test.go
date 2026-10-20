@@ -751,3 +751,81 @@ func getMetricValue(t *testing.T, reg *prometheus.Registry, metricName string, l
 	t.Fatalf("metric %s not found with labels %v", metricName, labels)
 	return 0
 }
+
+func gatheredValue(t *testing.T, reg *prometheus.Registry, name string) (float64, bool) {
+	t.Helper()
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		require.Len(t, mf.GetMetric(), 1)
+		m := mf.GetMetric()[0]
+		if m.Gauge != nil {
+			return m.GetGauge().GetValue(), true
+		}
+		return m.GetCounter().GetValue(), true
+	}
+	return 0, false
+}
+
+func TestMetrics_VerifierSelfObservability(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewWithRegistry("test", reg)
+	names := []string{
+		"test_verifier_queue_length",
+		"test_verifier_inflight_blocks",
+		"test_ws_reconnects_total",
+		"test_last_header_received_timestamp",
+		"test_verifier_backfilled_blocks_total",
+		"test_verifier_backfill_dropped_total",
+	}
+
+	m.InitializeVerifierMetrics("chain")
+	for _, name := range names {
+		v, ok := gatheredValue(t, reg, name)
+		require.True(t, ok, name)
+		require.Zero(t, v, name)
+	}
+
+	m.SetVerifierQueueLength("chain", 7)
+	m.AddInflightBlocks("chain", 1)
+	m.AddInflightBlocks("chain", 1)
+	m.AddInflightBlocks("chain", -1)
+	m.RecordWsReconnect("chain")
+	m.RecordWsReconnect("chain")
+	m.RecordHeaderReceived("chain", time.Unix(1700000000, 0))
+	m.RecordBackfill("chain", 3)
+	m.RecordBackfillDropped("chain", 5)
+
+	for name, want := range map[string]float64{
+		"test_verifier_queue_length":            7,
+		"test_verifier_inflight_blocks":         1,
+		"test_ws_reconnects_total":              2,
+		"test_last_header_received_timestamp":   1700000000,
+		"test_verifier_backfilled_blocks_total": 3,
+		"test_verifier_backfill_dropped_total":  5,
+	} {
+		v, ok := gatheredValue(t, reg, name)
+		require.True(t, ok, name)
+		require.Equal(t, want, v, name)
+	}
+}
+
+func TestMetrics_CheckHealth(t *testing.T) {
+	m := NewWithRegistry("test", prometheus.NewRegistry())
+
+	ok, reason := m.CheckHealth(0)
+	require.False(t, ok)
+	require.Contains(t, reason, "not ready")
+
+	m.SetSubscriptionUp(true)
+	ok, _ = m.CheckHealth(0)
+	require.True(t, ok)
+
+	m.SetSubscriptionUp(false)
+	ok, reason = m.CheckHealth(0)
+	require.False(t, ok)
+	require.Contains(t, reason, "down")
+}

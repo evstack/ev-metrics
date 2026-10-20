@@ -76,6 +76,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
+- `--health-max-header-age`: Seconds without a new block header after which `/health` returns 503 (default: 0, which disables the age check so only the subscription state matters). See [Health Endpoint](#health-endpoint).
 - `--verbose`: Enable verbose (debug level) logging (default: false)
 - `--log-format`: Log output format, `console` (human-readable) or `json` (one JSON object per line, for Loki/ELK ingestion) (default: `console`)
 
@@ -125,6 +126,8 @@ This will query account balances every 30 seconds with automatic failover betwee
 ## Prometheus Metrics
 
 The following metrics are exposed:
+
+Blocks without transactions have only their header blob verified (`type="header"`). Blocks with transactions have both their header blob (`type="header"`) and data blob (`type="data"`) verified, and each outcome is recorded under its own type. Tx blocks now count under `type="header"` too, so header submission counts (`submission_*`, `unsubmitted_*`, DA height and duration) rise after upgrading. Each block costs one extra Celestia request per transaction block for the header blob. If retries are exhausted, only the blob types that are still unverified are recorded as missing.
 
 ### `ev_metrics_unsubmitted_block_range_start`
 - **Type**: Gauge
@@ -194,7 +197,7 @@ The following metrics are exposed:
 ### `ev_metrics_block_time_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block time (not yet emitted, see #44)
+- **Description**: SLO thresholds for block time
 - **Values**:
   - `0.5`: 2.0s
   - `0.9`: 3.0s
@@ -204,18 +207,59 @@ The following metrics are exposed:
 ### `ev_metrics_block_receive_delay_seconds`
 - **Type**: Histogram
 - **Labels**: `chain_id`
-- **Description**: Delay between block creation and reception with histogram buckets (not yet emitted, see #44)
+- **Description**: Delay between block creation (`header.Time`) and reception with histogram buckets. Only headers received from the subscription are observed (not backfilled ones), and negative values from clock skew are recorded as 0. `header.Time` has 1-second resolution, so the value is only accurate to about ±1s.
 - **Buckets**: 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0 seconds
 
 ### `ev_metrics_block_receive_delay_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block receive delay (not yet emitted, see #44)
+- **Description**: SLO thresholds for block receive delay
 - **Values**:
   - `0.5`: 1.0s
   - `0.9`: 3.0s
   - `0.95`: 5.0s
   - `0.99`: 10.0s
+
+### Verifier Self-Observability Metrics
+
+### `ev_metrics_verifier_queue_length`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Number of blocks waiting in the verifier queue, sampled every 10 seconds. A value that stays near the queue capacity (2 x `--verifier.workers`) means the verifier is falling behind.
+
+### `ev_metrics_verifier_inflight_blocks`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Blocks between their first verification attempt and being verified or running out of retries, including blocks waiting on a retry timer. A block re-queued after the cooldown is counted again.
+
+### `ev_metrics_ws_reconnects_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Number of times the block header WebSocket subscription was re-established after dropping.
+
+### `ev_metrics_last_header_received_timestamp`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Unix timestamp in seconds of the last block header received from the subscription (backfilled headers are not counted). It is 0 until the first header arrives.
+
+### `ev_metrics_verifier_backfilled_blocks_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Blocks enqueued after a gap in the header subscription (for example after a reconnect).
+
+### `ev_metrics_verifier_backfill_dropped_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Blocks skipped because a subscription gap was larger than the 1000-block backfill cap. The oldest blocks are dropped.
+
+### Health Endpoint
+
+`GET /health` returns `200 OK`, or `503` with a short plain-text reason when:
+- the block header subscription has not been established yet (`not ready`),
+- the subscription is down (it is re-established automatically with backoff), or
+- `--health-max-header-age` is greater than 0 and no header has arrived within that many seconds (measured from the first subscription until a header arrives).
+
+Use `/health` as a **readiness** probe, not a liveness probe. With the age check enabled, a halted chain also fails it, and restarting the monitor would not fix that.
 
 ### JSON-RPC Monitoring Metrics
 
