@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+*.md
+ev-metrics
+*.test
+*.out
+Dockerfile
+.dockerignore
