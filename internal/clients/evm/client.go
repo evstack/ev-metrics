@@ -73,16 +73,28 @@ func (c *Client) HealthCheckRequest(ctx context.Context) (time.Duration, error) 
 		}
 	}()
 
-	duration := time.Since(startTime)
-
 	// Read the response to ensure full RTT
-	_, err = io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read response: %w", err)
 	}
+	duration := time.Since(startTime)
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var rpcResp struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return 0, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if rpcResp.Error != nil {
+		return 0, fmt.Errorf("JSON-RPC error: code %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
 	}
 
 	return duration, nil

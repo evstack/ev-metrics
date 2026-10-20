@@ -10,7 +10,6 @@ import (
 	"github.com/evstack/ev-node/types/pb/evnode/v1/v1connect"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type Client struct {
@@ -26,18 +25,6 @@ func NewClient(addr string, logger zerolog.Logger) *Client {
 		storeClient: storeClient,
 		logger:      logger.With().Str("component", "evnode_client").Logger(),
 	}
-}
-
-// GetState queries the current state including latest block height
-func (c *Client) GetState(ctx context.Context) (*evnode.GetStateResponse, error) {
-	req := connect.NewRequest(&emptypb.Empty{})
-
-	resp, err := c.storeClient.GetState(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get state: %w", err)
-	}
-
-	return resp.Msg, nil
 }
 
 type GetBlockResult struct {
@@ -95,16 +82,4 @@ func (c *Client) GetBlockWithBlobs(ctx context.Context, height uint64) (*GetBloc
 		HeaderBlob:     headerBlob,
 		DataBlob:       dataBlob,
 	}, nil
-}
-
-// GetGenesisDaHeight retrieves the DA height at which the first block was included
-func (c *Client) GetGenesisDaHeight(ctx context.Context) (uint64, error) {
-	req := connect.NewRequest(&emptypb.Empty{})
-
-	resp, err := c.storeClient.GetGenesisDaHeight(ctx, req)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get genesis DA height: %w", err)
-	}
-
-	return resp.Msg.Height, nil
 }

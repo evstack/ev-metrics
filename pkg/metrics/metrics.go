@@ -89,8 +89,7 @@ type Metrics struct {
 	lastHeaderReceived atomic.Int64 // unix nanos
 
 	// internal tracking to ensure we only record increasing DA heights
-	latestHeaderDaHeight uint64
-	latestDataDaHeight   uint64
+	latestDaHeight map[string]uint64 // key: submission type ("header" or "data")
 
 	// internal tracking for block time calculation (uses arrival time for ms precision)
 	lastBlockArrivalTime map[string]time.Time // key: chainID
@@ -405,6 +404,7 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			[]string{"chain_id"},
 		),
 		ranges:               make(map[string][]*blockRange),
+		latestDaHeight:       make(map[string]uint64),
 		lastBlockArrivalTime: make(map[string]time.Time),
 	}
 
@@ -437,19 +437,12 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if submissionType == "header" {
-		if daHeight > m.latestHeaderDaHeight {
-			m.latestHeaderDaHeight = daHeight
-			m.SubmissionDaHeight.WithLabelValues(chainID, "header").Set(float64(daHeight))
-		}
+	if submissionType != "header" && submissionType != "data" {
 		return
 	}
-
-	if submissionType == "data" {
-		if daHeight > m.latestDataDaHeight {
-			m.latestDataDaHeight = daHeight
-			m.SubmissionDaHeight.WithLabelValues(chainID, "data").Set(float64(daHeight))
-		}
+	if daHeight > m.latestDaHeight[submissionType] {
+		m.latestDaHeight[submissionType] = daHeight
+		m.SubmissionDaHeight.WithLabelValues(chainID, submissionType).Set(float64(daHeight))
 	}
 }
 

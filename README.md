@@ -162,12 +162,12 @@ Blocks without transactions have only their header blob verified (`type="header"
 ### `ev_metrics_submission_attempts_total`
 - **Type**: Counter
 - **Labels**: `chain_id`, `type`
-- **Description**: Total number of DA submission attempts (both successful and failed)
+- **Description**: Total number of DA submission attempts (both successful and failed). Counted once per blob type per verification round, not once per RPC attempt. A block whose retries run out and which is re-verified after the cooldown starts a new round.
 
 ### `ev_metrics_submission_failures_total`
 - **Type**: Counter
 - **Labels**: `chain_id`, `type`
-- **Description**: Total number of failed DA submission attempts
+- **Description**: Total number of failed DA submission attempts. Counted once per blob type per verification round, not once per RPC attempt. A block whose retries run out and which is re-verified after the cooldown starts a new round.
 
 ### `ev_metrics_last_submission_attempt_time`
 - **Type**: Gauge
