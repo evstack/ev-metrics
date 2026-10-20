@@ -63,7 +63,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--evm-ws-url`: EVM client WebSocket URL (default: `ws://localhost:8546`)
 - `--evm-rpc-url`: EVM client JSON-RPC URL for health checks (optional, enables JSON-RPC monitoring)
 - `--celestia-url`: Celestia DA JSON-RPC URL (default: `http://localhost:26658`)
-- `--celestia-token`: Celestia authentication token (optional)
+- `--celestia-token`: Celestia authentication token (optional), sent as a `Bearer` token on all Celestia requests, including block timestamp lookups. Required when the celestia-node has auth enabled (the default).
 - `--duration`: Duration in seconds to stream (0 = infinite)
 - `--chain-id`: Chain identifier for metrics labels (default: "testnet")
 - `--enable-metrics`: Enable Prometheus metrics HTTP server (default: false)
