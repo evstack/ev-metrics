@@ -25,7 +25,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: 'go.mod'
+          # scan with the latest Go release, not the go.mod minimum (1.26.0): the minimum has
+          # many already-fixed standard library vulnerabilities that are not about this code.
+          # The Docker image builds on golang:1.26-alpine, which tracks the latest patch.
+          go-version: 'stable'
+          check-latest: true
 
       - name: Run govulncheck
         run: |
