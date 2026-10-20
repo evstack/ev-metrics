@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/evstack/ev-metrics/internal/clients/evnode"
 	"github.com/evstack/ev-metrics/pkg/metrics"
@@ -19,22 +20,28 @@ import (
 
 const daOffset = 100
 
-// fakeBlocks reports a block as not yet submitted for notYet[height] attempts
-// (forever if negative), then as submitted at DA height height+daOffset.
+// fakeBlocks reports a block's header as not yet submitted for notYet[height] attempts
+// (forever if negative), then as submitted at DA height height+daOffset. The data blob
+// behaves the same way using dataNotYet.
 type fakeBlocks struct {
-	mu     sync.Mutex
-	notYet map[uint64]int
-	calls  map[uint64]int
+	mu         sync.Mutex
+	notYet     map[uint64]int
+	dataNotYet map[uint64]int
+	calls      map[uint64]int
 }
 
 func (f *fakeBlocks) GetBlockWithBlobs(_ context.Context, height uint64) (*evnode.GetBlockResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls[height]++
-	if n := f.notYet[height]; n < 0 || f.calls[height] <= n {
-		return &evnode.GetBlockResult{}, nil
+	res := &evnode.GetBlockResult{}
+	if n := f.notYet[height]; n >= 0 && f.calls[height] > n {
+		res.HeaderDaHeight, res.HeaderBlob = height+daOffset, []byte{1}
 	}
-	return &evnode.GetBlockResult{HeaderDaHeight: height + daOffset, HeaderBlob: []byte{1}}, nil
+	if n := f.dataNotYet[height]; n >= 0 && f.calls[height] > n {
+		res.DataDaHeight, res.DataBlob = height+daOffset, []byte{2}
+	}
+	return res, nil
 }
 
 func (f *fakeBlocks) callCount(height uint64) int {
@@ -46,6 +53,7 @@ func (f *fakeBlocks) callCount(height uint64) int {
 type fakeDA struct {
 	mu       sync.Mutex
 	verified []uint64
+	data     []uint64
 }
 
 func (f *fakeDA) GetBlockTimestamp(context.Context, uint64) (time.Time, error) {
@@ -59,8 +67,17 @@ func (f *fakeDA) VerifyBlobAtHeight(_ context.Context, _ []byte, daHeight uint64
 	return true, nil
 }
 
-func (f *fakeDA) VerifyDataBlobAtHeight(context.Context, []byte, uint64, []byte) (bool, error) {
+func (f *fakeDA) VerifyDataBlobAtHeight(_ context.Context, _ []byte, daHeight uint64, _ []byte) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.data = append(f.data, daHeight-daOffset)
 	return true, nil
+}
+
+func (f *fakeDA) dataHeights() []uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.data)
 }
 
 func (f *fakeDA) verifiedHeights() []uint64 {
@@ -111,6 +128,12 @@ func (f *fakeHeads) fetchedHeights() []uint64 {
 
 func newHeader(height uint64) *types.Header {
 	return &types.Header{Number: new(big.Int).SetUint64(height), TxHash: types.EmptyRootHash}
+}
+
+func newTxHeader(height uint64) *types.Header {
+	h := newHeader(height)
+	h.TxHash = common.Hash{1}
+	return h
 }
 
 type harness struct {
@@ -202,6 +225,29 @@ func (h *harness) sum(t *testing.T, name string) float64 {
 	return sum
 }
 
+// labeled sums the series of a metric whose label equals value.
+func (h *harness) labeled(t *testing.T, name, label, value string) float64 {
+	t.Helper()
+	families, err := h.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum float64
+	for _, mf := range families {
+		if mf.GetName() != "test_"+name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == label && l.GetValue() == value {
+					sum += m.GetGauge().GetValue() + m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return sum
+}
+
 func eventually(t *testing.T, msg string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -270,6 +316,103 @@ func TestRetriesExhaustedRequeuesAfterCooldown(t *testing.T) {
 	})
 	if got := h.blocks.callCount(1); got != 3 {
 		t.Fatalf("expected 3 attempts, got %d", got)
+	}
+}
+
+func TestTxBlockVerifiesHeaderAndData(t *testing.T) {
+	h := newHarness(1, nil, 0, time.Millisecond)
+	queue, _ := h.startWorkers(t)
+
+	queue <- job{header: newTxHeader(1)}
+
+	eventually(t, "block not verified", func() bool { return h.metric(t, "verifier_inflight_blocks") == 0 && len(h.da.dataHeights()) == 1 })
+	if got := h.blocks.callCount(1); got != 1 {
+		t.Fatalf("expected 1 ev-node call, got %d", got)
+	}
+	for _, typ := range []string{"header", "data"} {
+		if got := h.labeled(t, "submission_attempts_total", "type", typ); got != 1 {
+			t.Fatalf("expected 1 %s attempt, got %v", typ, got)
+		}
+		if got := h.labeled(t, "submission_failures_total", "type", typ); got != 0 {
+			t.Fatalf("expected no %s failures, got %v", typ, got)
+		}
+	}
+	if got := h.da.verifiedHeights(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("expected header verified once, got %v", got)
+	}
+}
+
+func TestTxBlockHeaderVerifiedBeforeData(t *testing.T) {
+	h := newHarness(1, map[uint64]int{1: 1}, 0, time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond)
+	h.blocks.dataNotYet = map[uint64]int{1: 3}
+	queue, _ := h.startWorkers(t)
+
+	queue <- job{header: newTxHeader(1)}
+
+	eventually(t, "data not verified", func() bool { return len(h.da.dataHeights()) == 1 })
+	eventually(t, "inflight not cleared", func() bool { return h.metric(t, "verifier_inflight_blocks") == 0 })
+	if got := h.blocks.callCount(1); got != 4 {
+		t.Fatalf("expected 4 attempts, got %d", got)
+	}
+	if got := h.da.verifiedHeights(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("expected header verified exactly once, got %v", got)
+	}
+	for _, typ := range []string{"header", "data"} {
+		if got := h.labeled(t, "submission_attempts_total", "type", typ); got != 1 {
+			t.Fatalf("expected 1 %s attempt, got %v", typ, got)
+		}
+	}
+	if got := h.metric(t, "unsubmitted_blocks_total"); got != 0 {
+		t.Fatalf("expected no unsubmitted blocks, got %v", got)
+	}
+}
+
+func TestTxBlockMissingHeaderOnlyRecordsHeader(t *testing.T) {
+	h := newHarness(1, map[uint64]int{1: -1}, 0, time.Millisecond)
+	queue, stop := h.startWorkers(t)
+
+	queue <- job{header: newTxHeader(1)}
+
+	eventually(t, "missing block not recorded", func() bool {
+		return h.labeled(t, "unsubmitted_blocks_total", "blob_type", "header") == 1
+	})
+	stop()
+	if got := h.labeled(t, "unsubmitted_blocks_total", "blob_type", "data"); got != 0 {
+		t.Fatalf("expected data not to be missing, got %v", got)
+	}
+	if got := h.labeled(t, "unsubmitted_block_range_start", "blob_type", "data"); got != 0 {
+		t.Fatalf("expected no data range, got %v", got)
+	}
+	if got := h.labeled(t, "unsubmitted_block_range_start", "blob_type", "header"); got != 1 {
+		t.Fatalf("expected header range starting at 1, got %v", got)
+	}
+	if got := h.labeled(t, "submission_failures_total", "type", "header"); got != 1 {
+		t.Fatalf("expected 1 header failure, got %v", got)
+	}
+	if got := h.labeled(t, "submission_failures_total", "type", "data"); got != 0 {
+		t.Fatalf("expected no data failures, got %v", got)
+	}
+	if got := h.labeled(t, "submission_attempts_total", "type", "data"); got != 1 {
+		t.Fatalf("expected the verified data to count 1 attempt, got %v", got)
+	}
+	if got := h.da.dataHeights(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("expected data verified once, got %v", got)
+	}
+}
+
+func TestBlockWithoutTransactionsOnlyVerifiesHeader(t *testing.T) {
+	h := newHarness(1, nil, 0, time.Millisecond)
+	queue, _ := h.startWorkers(t)
+
+	queue <- job{header: newHeader(1)}
+
+	eventually(t, "block not verified", func() bool { return len(h.da.verifiedHeights()) == 1 })
+	eventually(t, "inflight not cleared", func() bool { return h.metric(t, "verifier_inflight_blocks") == 0 })
+	if got := h.da.dataHeights(); len(got) != 0 {
+		t.Fatalf("expected no data verification, got %v", got)
+	}
+	if got := h.labeled(t, "submission_attempts_total", "type", "data"); got != 0 {
+		t.Fatalf("expected no data attempts, got %v", got)
 	}
 }
 
