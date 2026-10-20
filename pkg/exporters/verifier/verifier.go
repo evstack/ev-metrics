@@ -2,13 +2,12 @@ package verifier
 
 import (
 	"context"
+	"math/big"
 	"sync"
 	"time"
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/evstack/ev-metrics/internal/clients/celestia"
-	"github.com/evstack/ev-metrics/internal/clients/evm"
 	"github.com/evstack/ev-metrics/internal/clients/evnode"
 	"github.com/evstack/ev-metrics/pkg/metrics"
 	"github.com/rs/zerolog"
@@ -16,11 +15,52 @@ import (
 
 var _ metrics.Exporter = &exporter{}
 
+type blockSource interface {
+	GetBlockWithBlobs(ctx context.Context, height uint64) (*evnode.GetBlockResult, error)
+}
+
+type daVerifier interface {
+	GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.Time, error)
+	VerifyBlobAtHeight(ctx context.Context, blob []byte, daHeight uint64, namespace []byte) (bool, error)
+	VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob []byte, daHeight uint64, namespace []byte) (bool, error)
+}
+
+type headSource interface {
+	SubscribeNewHead(ctx context.Context, ch chan<- *types.Header) (ethereum.Subscription, error)
+	HeaderByNumber(ctx context.Context, number *big.Int) (*types.Header, error)
+}
+
+// job is one pending verification attempt for a block. start is zero until the
+// block is first processed by a worker.
+type job struct {
+	header  *types.Header
+	attempt int
+	start   time.Time
+}
+
+// defaultRetryIntervals is the delay before each verification attempt, matching
+// observed DA submission timing.
+var defaultRetryIntervals = []time.Duration{
+	0, // immediate first attempt
+	20 * time.Second,
+	40 * time.Second,
+	60 * time.Second,
+	90 * time.Second,
+	120 * time.Second,
+}
+
+const (
+	// defaultCooldown is how long to wait before re-verifying a block whose retries were exhausted.
+	defaultCooldown = 5 * time.Minute
+	// maxBackfill caps how many heights are fetched after a gap in the header subscription.
+	maxBackfill = 1000
+)
+
 // NewMetricsExporter creates a new exporter
 func NewMetricsExporter(
-	evnodeClient *evnode.Client,
-	celestiaClient *celestia.Client,
-	evmClient *evm.Client,
+	evnodeClient blockSource,
+	celestiaClient daVerifier,
+	evmClient headSource,
 	headerNS, dataNS []byte,
 	chainID string,
 	workers int,
@@ -34,19 +74,23 @@ func NewMetricsExporter(
 		dataNS:         dataNS,
 		chainID:        chainID,
 		workers:        workers,
+		retryIntervals: defaultRetryIntervals,
+		cooldown:       defaultCooldown,
 		logger:         logger.With().Str("component", "verification_monitor").Logger(),
 	}
 }
 
 // exporter handles verification of blocks against Celestia DA
 type exporter struct {
-	evnodeClient   *evnode.Client
-	celestiaClient *celestia.Client
-	evmClient      *evm.Client
+	evnodeClient   blockSource
+	celestiaClient daVerifier
+	evmClient      headSource
 	headerNS       []byte
 	dataNS         []byte
 	chainID        string
 	workers        int
+	retryIntervals []time.Duration
+	cooldown       time.Duration
 	logger         zerolog.Logger
 }
 
@@ -59,7 +103,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	}
 
 	// create buffered channel for block queue
-	blockQueue := make(chan *types.Header, e.workers*2)
+	blockQueue := make(chan job, e.workers*2)
 
 	// start work pool
 	var workerGroup sync.WaitGroup
@@ -88,6 +132,9 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 		sub.Unsubscribe()
 		workerGroup.Wait()
 	}
+
+	// lastHeight is the highest block seen, used to detect gaps after reconnects.
+	var lastHeight uint64
 
 	// main subscription loop
 	for {
@@ -122,14 +169,24 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			arrivalTime := time.Now()
 			m.RecordBlockTime(e.chainID, arrivalTime)
 
+			height := header.Number.Uint64()
 			e.logger.Debug().
-				Uint64("block_height", header.Number.Uint64()).
+				Uint64("block_height", height).
 				Time("arrival_time", arrivalTime).
 				Msg("received block header from subscription")
 
+			if lastHeight != 0 && height > lastHeight+1 {
+				workerGroup.Add(1)
+				go func(from, to uint64) {
+					defer workerGroup.Done()
+					e.backfill(ctx, blockQueue, from, to)
+				}(lastHeight+1, height-1)
+			}
+			lastHeight = max(lastHeight, height)
+
 			// send block to work pool, blocking until space is available
 			select {
-			case blockQueue <- header:
+			case blockQueue <- job{header: header}:
 				// block queued successfully
 			case <-ctx.Done():
 				shutdown()
@@ -166,35 +223,56 @@ func (e *exporter) reconnectSubscription(ctx context.Context, headers chan *type
 	}
 }
 
+// backfill enqueues the blocks in [from, to] that were missed by the subscription,
+// keeping only the most recent maxBackfill heights.
+func (e *exporter) backfill(ctx context.Context, blockQueue chan<- job, from, to uint64) {
+	if n := to - from + 1; n > maxBackfill {
+		e.logger.Warn().Uint64("dropped", n-maxBackfill).Uint64("from", from).Uint64("to", to).Msg("backfill gap too large, skipping oldest blocks")
+		from = to - maxBackfill + 1
+	}
+	e.logger.Info().Uint64("from", from).Uint64("to", to).Msg("backfilling blocks missed by subscription")
+
+	for h := from; h <= to; h++ {
+		header, err := e.evmClient.HeaderByNumber(ctx, new(big.Int).SetUint64(h))
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			e.logger.Warn().Err(err).Uint64("block_height", h).Msg("failed to fetch header for backfill, skipping")
+			continue
+		}
+		select {
+		case blockQueue <- job{header: header}:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// enqueueAfter sends j to blockQueue after d without blocking the caller.
+func enqueueAfter(ctx context.Context, blockQueue chan<- job, d time.Duration, j job) {
+	time.AfterFunc(d, func() {
+		select {
+		case blockQueue <- j:
+		case <-ctx.Done():
+		}
+	})
+}
+
 // processBlocks processes blocks from the queue
-func (e *exporter) processBlocks(ctx context.Context, m *metrics.Metrics, workerID int, blockQueue chan *types.Header) {
+func (e *exporter) processBlocks(ctx context.Context, m *metrics.Metrics, workerID int, blockQueue chan job) {
 	logger := e.logger.With().Int("worker_id", workerID).Logger()
 	logger.Debug().Msg("worker started")
 
-	// blockQueue is never closed: delayed re-queue goroutines may still send to it,
+	// blockQueue is never closed: delayed re-queue timers may still send to it,
 	// so workers exit on ctx cancellation instead.
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Debug().Msg("worker stopped")
 			return
-		case header := <-blockQueue:
-			reEnqueue := e.verifyBlock(ctx, m, header)
-			if reEnqueue {
-				// re-queue with delay in background
-				go func(h *types.Header) {
-					select {
-					case <-time.After(5 * time.Minute):
-						select {
-						case blockQueue <- h:
-							logger.Debug().Uint64("block", h.Number.Uint64()).Msg("re-queued block after cooldown")
-						case <-ctx.Done():
-							// graceful shutdown, don't send
-						}
-					case <-ctx.Done():
-					}
-				}(header)
-			}
+		case j := <-blockQueue:
+			e.verifyBlock(ctx, m, blockQueue, j)
 		}
 	}
 }
@@ -217,8 +295,10 @@ func (e *exporter) onVerified(m *metrics.Metrics, namespace string, blockHeight,
 // freezing metrics.
 const verifyAttemptTimeout = 30 * time.Second
 
-// verifyBlock attempts to verify a DA height for a given block status.
-func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, header *types.Header) bool {
+// verifyBlock makes one verification attempt for j and schedules the next attempt
+// (or a cooldown re-queue once retries are exhausted) without blocking the worker.
+func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, blockQueue chan<- job, j job) {
+	header := j.header
 	blockHeight := header.Number.Uint64()
 
 	// check if block has transactions
@@ -232,46 +312,29 @@ func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, header *
 	blockTime := time.Unix(int64(header.Time), 0)
 
 	logger := e.logger.With().Str("namespace", namespace).Uint64("block_height", blockHeight).Logger()
-	logger.Info().
-		Str("hash", header.Hash().Hex()).
-		Time("time", blockTime).
-		Uint64("gas_used", header.GasUsed).
-		Bool("has_transactions", hasTransactions).
-		Msg("processing block")
-
-	startTime := time.Now()
-
-	// exponential backoff intervals matching observed DA submission timing
-	retryIntervals := []time.Duration{
-		0, // immediate first attempt
-		20 * time.Second,
-		40 * time.Second,
-		60 * time.Second,
-		90 * time.Second,
-		120 * time.Second,
+	if j.start.IsZero() {
+		j.start = time.Now()
+		logger.Debug().
+			Str("hash", header.Hash().Hex()).
+			Time("time", blockTime).
+			Uint64("gas_used", header.GasUsed).
+			Bool("has_transactions", hasTransactions).
+			Msg("processing block")
 	}
 
-	for i, interval := range retryIntervals {
-		retries := i + 1
-
-		select {
-		case <-ctx.Done():
-			// context cancelled during graceful shutdown, not an error
-			logger.Debug().Msg("block verification stopped due to shutdown")
-			return false
-		case <-time.After(interval):
-			// proceed with retry
-		}
-
-		if e.verifyAttempt(ctx, m, logger, retries, blockHeight, namespace, blockTime, startTime) {
-			return false
-		}
+	if e.verifyAttempt(ctx, m, logger, j.attempt+1, blockHeight, namespace, blockTime, j.start) {
+		return
 	}
 
-	// if loop completes without success, log final error
+	if next := j.attempt + 1; next < len(e.retryIntervals) {
+		j.attempt = next
+		enqueueAfter(ctx, blockQueue, e.retryIntervals[next], j)
+		return
+	}
+
 	logger.Error().Msg("max retries exhausted: failed to verify block")
 	e.onVerified(m, namespace, blockHeight, 0, false, 0)
-	return true
+	enqueueAfter(ctx, blockQueue, e.cooldown, job{header: header})
 }
 
 // verifyAttempt performs one bounded RPC attempt to verify a block against Celestia DA.
@@ -283,25 +346,19 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 	attemptCtx, cancel := context.WithTimeout(ctx, verifyAttemptTimeout)
 	defer cancel()
 
-	blockResult, err := e.evnodeClient.GetBlock(attemptCtx, blockHeight)
+	blockResultWithBlobs, err := e.evnodeClient.GetBlockWithBlobs(attemptCtx, blockHeight)
 	if err != nil {
-		logger.Warn().Err(err).Int("attempt", retries).Msg("failed to re-query block from ev-node")
+		logger.Warn().Err(err).Int("attempt", retries).Msg("failed to query block from ev-node")
 		return false
 	}
 
-	daHeight := blockResult.HeaderDaHeight
+	daHeight := blockResultWithBlobs.HeaderDaHeight
 	if namespace == "data" {
-		daHeight = blockResult.DataDaHeight
+		daHeight = blockResultWithBlobs.DataDaHeight
 	}
 
 	if daHeight == 0 {
 		logger.Debug().Int("attempt", retries).Msg("block still not submitted to DA, will retry")
-		return false
-	}
-
-	blockResultWithBlobs, err := e.evnodeClient.GetBlockWithBlobs(attemptCtx, blockHeight)
-	if err != nil {
-		logger.Warn().Err(err).Int("attempt", retries).Msg("failed to query block from ev-node")
 		return false
 	}
 
@@ -322,7 +379,7 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 			return false
 		}
 		if verified {
-			logger.Info().
+			logger.Debug().
 				Uint64("da_height", daHeight).
 				Dur("duration", time.Since(startTime)).
 				Msg("header blob verified on Celestia")
@@ -333,7 +390,7 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 
 	case "data":
 		if len(blockResultWithBlobs.DataBlob) == 0 {
-			logger.Info().
+			logger.Debug().
 				Dur("duration", time.Since(startTime)).
 				Msg("empty data block - no verification needed")
 			e.onVerified(m, namespace, blockHeight, daHeight, true, submissionDuration)
@@ -347,7 +404,7 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 			return false
 		}
 		if verified {
-			logger.Info().
+			logger.Debug().
 				Uint64("da_height", daHeight).
 				Dur("duration", time.Since(startTime)).
 				Msg("data blob verified on Celestia")
