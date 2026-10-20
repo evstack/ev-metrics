@@ -162,12 +162,12 @@ Blocks without transactions have only their header blob verified (`type="header"
 ### `ev_metrics_submission_attempts_total`
 - **Type**: Counter
 - **Labels**: `chain_id`, `type`
-- **Description**: Total number of DA submission attempts (both successful and failed)
+- **Description**: Total number of DA submission attempts (both successful and failed). Counted once per blob type per verification round, not once per RPC attempt. A block whose retries run out and which is re-verified after the cooldown starts a new round.
 
 ### `ev_metrics_submission_failures_total`
 - **Type**: Counter
 - **Labels**: `chain_id`, `type`
-- **Description**: Total number of failed DA submission attempts
+- **Description**: Total number of failed DA submission attempts. Counted once per blob type per verification round, not once per RPC attempt. A block whose retries run out and which is re-verified after the cooldown starts a new round.
 
 ### `ev_metrics_last_submission_attempt_time`
 - **Type**: Gauge
@@ -328,18 +328,4 @@ When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
 
 ## Debug Logging
 
-There are two independent debug logging mechanisms:
-
-- `--verbose` flag: sets the application log level to debug. Per-block and per-poll success messages (block verification, drift polls, balance checks, JSON-RPC health checks) are logged at debug level, so use `--verbose` to see them. Warnings and errors are always logged.
-- `EVMETRICS_DEBUG=true` environment variable: logs DA submission details from the metrics package.
-
-**Use cases**: Troubleshoot submission failures, verify submission flow.
-
-**`EVMETRICS_DEBUG` logs include**: Successful/failed submission attempts and DA height updates.
-
-**Example**:
-```bash
-# Enable debug logging
-export EVMETRICS_DEBUG=true
-./ev-metrics monitor --header-namespace testnet_header --data-namespace testnet_data
-```
+Use the `--verbose` flag to set the application log level to debug. It is the single way to get debug output: per-block, per-poll (drift, balance, JSON-RPC health checks) and per-verification success messages. Warnings and errors are always logged.

@@ -27,6 +27,8 @@ func CategorizeError(err error) string {
 		return "connection_failed"
 	case strings.Contains(errStr, "failed to get block number"):
 		return "rpc_error"
+	case strings.Contains(errStr, "JSON-RPC error"):
+		return "rpc_error"
 	case strings.Contains(errStr, "unexpected status code"):
 		return "http_error"
 	case strings.Contains(errStr, "failed to send request"):
