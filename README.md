@@ -127,7 +127,7 @@ This will query account balances every 30 seconds with automatic failover betwee
 
 The following metrics are exposed:
 
-Blocks without transactions have only their header blob verified (`type="header"`). Blocks with transactions have both their header blob (`type="header"`) and data blob (`type="data"`) verified, and each outcome is recorded under its own type. Tx blocks now count under `type="header"` too, so header submission counts (`submission_*`, `unsubmitted_*`, DA height and duration) rise after upgrading. Each block costs one extra Celestia request per transaction block for the header blob. If retries are exhausted, only the blob types that are still unverified are recorded as missing.
+Blocks without transactions have only their header blob verified (`type="header"`). Blocks with transactions have both their header blob (`type="header"`) and data blob (`type="data"`) verified, and each outcome is recorded under its own type. Tx blocks now count under `type="header"` too, so header submission counts (`submission_*`, `unsubmitted_*`, DA height and duration) rise after upgrading. Each transaction block costs one extra Celestia request for its header blob. If retries are exhausted, only the blob types that are still unverified are recorded as missing.
 
 ### `ev_metrics_unsubmitted_block_range_start`
 - **Type**: Gauge
