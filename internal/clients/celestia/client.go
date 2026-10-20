@@ -22,6 +22,7 @@ type Client struct {
 	*jsonrpc.Client
 	logger zerolog.Logger
 	url    string
+	token  string
 }
 
 func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*Client, error) {
@@ -35,6 +36,7 @@ func NewClient(ctx context.Context, url, token string, logger zerolog.Logger) (*
 		Client: client,
 		logger: logger.With().Str("component", "celestia_client").Logger(),
 		url:    url,
+		token:  token,
 	}, nil
 }
 
@@ -245,6 +247,9 @@ func (c *Client) GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.T
 		return time.Time{}, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
