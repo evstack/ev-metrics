@@ -1,0 +1,38 @@
+name: govulncheck
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 6 * * 1'
+
+env:
+  # reachable vulnerability with no upstream fix yet; delete once x/crypto ships a fix
+  ALLOWED_VULN: GO-2026-5932
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          # scan with the latest Go release, not the go.mod minimum (1.26.0): the minimum has
+          # many already-fixed standard library vulnerabilities that are not about this code.
+          # The Docker image builds on golang:1.26-alpine, which tracks the latest patch.
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Run govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@latest -format json ./... \
+            | jq -e -s --arg allowed "$ALLOWED_VULN" \
+              '[.[] | select(.finding != null and .finding.trace[0].function != null) | .finding.osv] | unique - [$allowed] | length == 0'
