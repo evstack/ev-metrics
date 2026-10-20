@@ -1,10 +1,9 @@
 # build stage
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS TARGETARCH
 
 WORKDIR /build
-
-# install build dependencies
-RUN apk add --no-cache git gcc musl-dev
 
 # copy go mod files
 COPY go.mod go.sum ./
@@ -13,17 +12,16 @@ RUN go mod download
 # copy source code
 COPY . .
 
-# build binary
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o ev-metrics .
+# build static binary for the target platform
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o ev-metrics .
 
-# final stage
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
+# final stage: includes CA certificates and a nonroot user (uid 65532)
+FROM gcr.io/distroless/static:nonroot@sha256:516757106de35205efb70b91ba03f6f1298424a0678c603255cf2852a7000087
 
 WORKDIR /app
 
-# copy binary from builder
 COPY --from=builder /build/ev-metrics .
+
+USER 65532:65532
 
 ENTRYPOINT ["/app/ev-metrics"]

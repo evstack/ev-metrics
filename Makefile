@@ -23,7 +23,7 @@ lint-fix:
 # run all tests
 test:
 	@echo "Running tests..."
-	go test -v ./...
+	go test -race -v ./...
 
 # build the binary
 build:
