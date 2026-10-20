@@ -77,6 +77,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
 - `--verbose`: Enable verbose (debug level) logging (default: false)
+- `--log-format`: Log output format, `console` (human-readable) or `json` (one JSON object per line, for Loki/ELK ingestion) (default: `console`)
 
 ### Example with Custom Endpoints
 
@@ -118,6 +119,8 @@ Monitor native token balances for one or more Celestia addresses:
 ```
 
 This will query account balances every 30 seconds with automatic failover between RPC endpoints.
+
+`https://` consensus endpoints are dialed over TLS (port 443 if none is given); `http://` and bare `host:port` endpoints use plaintext gRPC.
 
 ## Prometheus Metrics
 
@@ -276,7 +279,7 @@ When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
 
 There are two independent debug logging mechanisms:
 
-- `--verbose` flag: sets the application log level to debug.
+- `--verbose` flag: sets the application log level to debug. Per-block and per-poll success messages (block verification, drift polls, balance checks, JSON-RPC health checks) are logged at debug level, so use `--verbose` to see them. Warnings and errors are always logged.
 - `EVMETRICS_DEBUG=true` environment variable: logs DA submission details from the metrics package.
 
 **Use cases**: Troubleshoot submission failures, verify submission flow.

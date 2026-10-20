@@ -13,6 +13,8 @@ import (
 
 var _ metrics.Exporter = &exporter{}
 
+const defaultRPCTimeout = 5 * time.Second
+
 // NewMetricsExporter creates a new balance monitoring exporter
 func NewMetricsExporter(
 	chainID string,
@@ -26,6 +28,7 @@ func NewMetricsExporter(
 		addresses:      addresses,
 		endpoints:      endpoints,
 		scrapeInterval: scrapeInterval,
+		rpcTimeout:     defaultRPCTimeout,
 		logger:         logger.With().Str("component", "balance_monitor").Logger(),
 	}
 }
@@ -36,6 +39,7 @@ type exporter struct {
 	addresses      []string
 	endpoints      []string
 	scrapeInterval int
+	rpcTimeout     time.Duration
 	logger         zerolog.Logger
 }
 
@@ -44,6 +48,16 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	ticker := time.NewTicker(time.Duration(e.scrapeInterval) * time.Second)
 	defer ticker.Stop()
 
+	// one client per endpoint, created on first use and shared across scrapes and addresses
+	clients := make([]*cosmos.Client, len(e.endpoints))
+	defer func() {
+		for _, c := range clients {
+			if c != nil {
+				_ = c.Close()
+			}
+		}
+	}()
+
 	e.logger.Info().
 		Strs("addresses", e.addresses).
 		Strs("endpoints", e.endpoints).
@@ -51,40 +65,41 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 		Msg("starting balance monitoring")
 
 	for {
+		for _, address := range e.addresses {
+			e.checkBalance(ctx, m, clients, address)
+		}
+
 		select {
 		case <-ctx.Done():
 			e.logger.Info().Msg("stopping balance monitoring")
 			return ctx.Err()
 		case <-ticker.C:
-			for _, address := range e.addresses {
-				e.checkBalance(ctx, m, address)
-			}
 		}
 	}
 }
 
 // checkBalance queries balance with fallback across endpoints
-func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, address string) {
+func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, clients []*cosmos.Client, address string) {
 	// try each endpoint until one succeeds
-	for _, endpoint := range e.endpoints {
-		// create client
-		client, err := cosmos.NewClient(endpoint, e.logger)
-		if err != nil {
-			e.logger.Warn().
-				Err(err).
-				Str("endpoint", endpoint).
-				Str("address", address).
-				Msg("failed to create client, trying next endpoint")
-			m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
-			m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
-			continue
+	for i, endpoint := range e.endpoints {
+		if clients[i] == nil {
+			client, err := cosmos.NewClient(endpoint, e.logger)
+			if err != nil {
+				e.logger.Warn().
+					Err(err).
+					Str("endpoint", endpoint).
+					Str("address", address).
+					Msg("failed to create client, trying next endpoint")
+				m.RecordConsensusRpcEndpointAvailability(e.chainID, endpoint, false)
+				m.RecordConsensusRpcEndpointError(e.chainID, endpoint, utils.CategorizeError(err))
+				continue
+			}
+			clients[i] = client
 		}
 
-		// query balance
-		balances, err := client.GetBalance(ctx, address)
-
-		// close client
-		_ = client.Close()
+		callCtx, cancel := context.WithTimeout(ctx, e.rpcTimeout)
+		balances, err := clients[i].GetBalance(callCtx, address)
+		cancel()
 
 		if err != nil {
 			e.logger.Warn().
@@ -116,7 +131,7 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, address
 			balanceFloat, _ := amount.Float64()
 			m.RecordAccountBalance(e.chainID, address, coin.Denom, balanceFloat)
 
-			e.logger.Info().
+			e.logger.Debug().
 				Str("address", address).
 				Str("denom", coin.Denom).
 				Float64("balance", balanceFloat).

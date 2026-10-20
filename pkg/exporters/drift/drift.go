@@ -3,14 +3,18 @@ package drift
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
+
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/evstack/ev-metrics/pkg/metrics"
 	"github.com/evstack/ev-metrics/pkg/utils"
 	"github.com/rs/zerolog"
-	"time"
 )
 
 var _ metrics.Exporter = &exporter{}
+
+const defaultRPCTimeout = 5 * time.Second
 
 // NewMetricsExporter creates and returns a metrics exporter for monitoring block height drift across multiple nodes.
 func NewMetricsExporter(chainID, referenceNode string, fullNodes []string, pollingInterval int, logger zerolog.Logger) metrics.Exporter {
@@ -19,6 +23,7 @@ func NewMetricsExporter(chainID, referenceNode string, fullNodes []string, polli
 		referenceNode:   referenceNode,
 		fullNodes:       fullNodes,
 		pollingInterval: pollingInterval,
+		rpcTimeout:      defaultRPCTimeout,
 		logger:          logger.With().Str("component", "drift_monitor").Logger(),
 	}
 }
@@ -29,8 +34,23 @@ type exporter struct {
 	referenceNode   string
 	fullNodes       []string
 	pollingInterval int
+	rpcTimeout      time.Duration
 	logger          zerolog.Logger
 	lastHeight      uint64
+}
+
+// node holds a lazily dialed client for one endpoint. Polls never overlap, so a node is
+// only ever used by one goroutine at a time.
+type node struct {
+	url    string
+	client *ethclient.Client
+}
+
+func (n *node) close() {
+	if n.client != nil {
+		n.client.Close()
+		n.client = nil
+	}
 }
 
 // ExportMetrics continuously checks block heights of a reference node and multiple full nodes,
@@ -39,6 +59,18 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	ticker := time.NewTicker(time.Duration(e.pollingInterval) * time.Second)
 	defer ticker.Stop()
 
+	ref := &node{url: e.referenceNode}
+	fullNodes := make([]*node, len(e.fullNodes))
+	for i, url := range e.fullNodes {
+		fullNodes[i] = &node{url: url}
+	}
+	defer func() {
+		ref.close()
+		for _, n := range fullNodes {
+			n.close()
+		}
+	}()
+
 	e.logger.Info().
 		Str("reference_node", e.referenceNode).
 		Strs("full_nodes", e.fullNodes).
@@ -46,67 +78,87 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 		Msg("starting node drift monitoring")
 
 	for {
+		e.poll(ctx, m, ref, fullNodes)
+
 		select {
 		case <-ctx.Done():
 			e.logger.Info().Msg("stopping node drift monitoring")
 			return ctx.Err()
 		case <-ticker.C:
-			// get reference node height
-			refHeight, err := getBlockHeight(ctx, e.referenceNode)
-			if err != nil {
-				e.logger.Error().Err(err).Str("endpoint", e.referenceNode).Msg("failed to get reference node block height")
-				m.RecordEndpointAvailability(e.chainID, e.referenceNode, false)
-				m.RecordEndpointError(e.chainID, e.referenceNode, utils.CategorizeError(err))
-				continue
-			}
-
-			m.RecordEndpointAvailability(e.chainID, e.referenceNode, true)
-			m.RecordReferenceBlockHeight(e.chainID, e.referenceNode, refHeight)
-			// Also update time since last block metric when we see new blocks via polling
-			// This ensures the metric stays accurate even if WebSocket subscription fails
-			if refHeight > e.lastHeight {
-				m.UpdateLastBlockTime(e.chainID, time.Now())
-				e.lastHeight = refHeight
-			}
-			e.logger.Info().Uint64("height", refHeight).Str("endpoint", e.referenceNode).Msg("recorded reference node height")
-
-			// get each full node height and calculate drift
-			for _, fullNode := range e.fullNodes {
-				currentHeight, err := getBlockHeight(ctx, fullNode)
-				if err != nil {
-					e.logger.Error().Err(err).Str("endpoint", fullNode).Msg("failed to get full node block height")
-					m.RecordEndpointAvailability(e.chainID, fullNode, false)
-					m.RecordEndpointError(e.chainID, fullNode, utils.CategorizeError(err))
-					continue
-				}
-
-				m.RecordEndpointAvailability(e.chainID, fullNode, true)
-				m.RecordCurrentBlockHeight(e.chainID, fullNode, currentHeight)
-				m.RecordBlockHeightDrift(e.chainID, fullNode, refHeight, currentHeight)
-
-				drift := int64(refHeight) - int64(currentHeight)
-				e.logger.Info().
-					Uint64("ref_height", refHeight).
-					Uint64("target_height", currentHeight).
-					Int64("drift", drift).
-					Str("endpoint", fullNode).
-					Msg("recorded full node height and drift")
-			}
 		}
 	}
 }
 
-// getBlockHeight queries an EVM RPC endpoint for its current block height
-func getBlockHeight(ctx context.Context, rpcURL string) (uint64, error) {
-	client, err := ethclient.DialContext(ctx, rpcURL)
+// poll records the reference node height, then queries all full nodes concurrently and records their drift.
+func (e *exporter) poll(ctx context.Context, m *metrics.Metrics, ref *node, fullNodes []*node) {
+	refHeight, err := e.blockHeight(ctx, ref)
 	if err != nil {
-		return 0, fmt.Errorf("failed to connect to %s: %w", rpcURL, err)
+		e.logger.Error().Err(err).Str("endpoint", ref.url).Msg("failed to get reference node block height")
+		m.RecordEndpointAvailability(e.chainID, ref.url, false)
+		m.RecordEndpointError(e.chainID, ref.url, utils.CategorizeError(err))
+		return
 	}
-	defer client.Close()
 
-	height, err := client.BlockNumber(ctx)
+	m.RecordEndpointAvailability(e.chainID, ref.url, true)
+	m.RecordReferenceBlockHeight(e.chainID, ref.url, refHeight)
+	// Also update time since last block metric when we see new blocks via polling
+	// This ensures the metric stays accurate even if WebSocket subscription fails
+	if refHeight > e.lastHeight {
+		m.UpdateLastBlockTime(e.chainID, time.Now())
+		e.lastHeight = refHeight
+	}
+	e.logger.Debug().Uint64("height", refHeight).Str("endpoint", ref.url).Msg("recorded reference node height")
+
+	var wg sync.WaitGroup
+	for _, n := range fullNodes {
+		wg.Add(1)
+		go func(n *node) {
+			defer wg.Done()
+			e.pollFullNode(ctx, m, n, refHeight)
+		}(n)
+	}
+	wg.Wait()
+}
+
+func (e *exporter) pollFullNode(ctx context.Context, m *metrics.Metrics, n *node, refHeight uint64) {
+	currentHeight, err := e.blockHeight(ctx, n)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get block number from %s: %w", rpcURL, err)
+		e.logger.Error().Err(err).Str("endpoint", n.url).Msg("failed to get full node block height")
+		m.RecordEndpointAvailability(e.chainID, n.url, false)
+		m.RecordEndpointError(e.chainID, n.url, utils.CategorizeError(err))
+		return
+	}
+
+	m.RecordEndpointAvailability(e.chainID, n.url, true)
+	m.RecordCurrentBlockHeight(e.chainID, n.url, currentHeight)
+	m.RecordBlockHeightDrift(e.chainID, n.url, refHeight, currentHeight)
+
+	e.logger.Debug().
+		Uint64("ref_height", refHeight).
+		Uint64("target_height", currentHeight).
+		Int64("drift", int64(refHeight)-int64(currentHeight)).
+		Str("endpoint", n.url).
+		Msg("recorded full node height and drift")
+}
+
+// blockHeight queries an EVM RPC endpoint for its current block height, dialing on first use
+// and dropping the client on failure so the next poll redials.
+func (e *exporter) blockHeight(ctx context.Context, n *node) (uint64, error) {
+	ctx, cancel := context.WithTimeout(ctx, e.rpcTimeout)
+	defer cancel()
+
+	if n.client == nil {
+		client, err := ethclient.DialContext(ctx, n.url)
+		if err != nil {
+			return 0, fmt.Errorf("failed to connect to %s: %w", n.url, err)
+		}
+		n.client = client
+	}
+
+	height, err := n.client.BlockNumber(ctx)
+	if err != nil {
+		n.close()
+		return 0, fmt.Errorf("failed to get block number from %s: %w", n.url, err)
 	}
 
 	return height, nil
