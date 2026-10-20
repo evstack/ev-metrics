@@ -45,6 +45,7 @@ const (
 	flagBalanceRpcUrls        = "balance.consensus-rpc-urls"
 	flagBalanceScrapeInterval = "balance.scrape-interval"
 	flagVerifierWorkers       = "verifier.workers"
+	flagHealthMaxHeaderAge    = "health-max-header-age"
 
 	metricsPath = "/metrics"
 )
@@ -72,6 +73,7 @@ type flagValues struct {
 	balanceRpcUrls        string
 	balanceScrapeInterval int
 	verifierWorkers       int
+	healthMaxHeaderAge    int
 }
 
 func NewMonitorCmd() *cobra.Command {
@@ -106,6 +108,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.balanceRpcUrls, flagBalanceRpcUrls, "", "Comma-separated consensus rpc urls for balance queries (required if balance.addresses is set)")
 	cmd.Flags().IntVar(&flags.balanceScrapeInterval, flagBalanceScrapeInterval, 30, "Balance check scrape interval in seconds (default: 30)")
 	cmd.Flags().IntVar(&flags.verifierWorkers, flagVerifierWorkers, 50, "Number of concurrent workers for block verification (default: 50)")
+	cmd.Flags().IntVar(&flags.healthMaxHeaderAge, flagHealthMaxHeaderAge, 0, "/health fails when no block header has arrived for this many seconds (0 = disabled, only subscription state is checked)")
 
 	if err := cmd.MarkFlagRequired(flagHeaderNS); err != nil {
 		panic(err)
@@ -260,7 +263,7 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 			Msg("balance monitoring enabled")
 	}
 
-	err = metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
+	err = metrics.StartServer(ctx, metricsPath, flags.port, time.Duration(flags.healthMaxHeaderAge)*time.Second, logger, exporters...)
 
 	// context.Canceled (shutdown) and context.DeadlineExceeded (--duration) are clean exits
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

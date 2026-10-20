@@ -52,6 +52,8 @@ var defaultRetryIntervals = []time.Duration{
 const (
 	// defaultCooldown is how long to wait before re-verifying a block whose retries were exhausted.
 	defaultCooldown = 5 * time.Minute
+	// defaultReconnectBackoff is the initial delay before re-subscribing; it doubles up to a 60s cap.
+	defaultReconnectBackoff = 5 * time.Second
 	// maxBackfill caps how many heights are fetched after a gap in the header subscription.
 	maxBackfill = 1000
 )
@@ -67,16 +69,17 @@ func NewMetricsExporter(
 	logger zerolog.Logger,
 ) metrics.Exporter {
 	return &exporter{
-		evnodeClient:   evnodeClient,
-		evmClient:      evmClient,
-		celestiaClient: celestiaClient,
-		headerNS:       headerNS,
-		dataNS:         dataNS,
-		chainID:        chainID,
-		workers:        workers,
-		retryIntervals: defaultRetryIntervals,
-		cooldown:       defaultCooldown,
-		logger:         logger.With().Str("component", "verification_monitor").Logger(),
+		evnodeClient:     evnodeClient,
+		evmClient:        evmClient,
+		celestiaClient:   celestiaClient,
+		headerNS:         headerNS,
+		dataNS:           dataNS,
+		chainID:          chainID,
+		workers:          workers,
+		retryIntervals:   defaultRetryIntervals,
+		cooldown:         defaultCooldown,
+		reconnectBackoff: defaultReconnectBackoff,
+		logger:           logger.With().Str("component", "verification_monitor").Logger(),
 	}
 }
 
@@ -91,7 +94,9 @@ type exporter struct {
 	workers        int
 	retryIntervals []time.Duration
 	cooldown       time.Duration
-	logger         zerolog.Logger
+	// reconnectBackoff is the initial delay before re-subscribing after the subscription drops.
+	reconnectBackoff time.Duration
+	logger           zerolog.Logger
 }
 
 // ExportMetrics starts the block verification monitoring loop
@@ -101,6 +106,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	if err != nil {
 		return err
 	}
+	m.SetSubscriptionUp(true)
 
 	// create buffered channel for block queue
 	blockQueue := make(chan job, e.workers*2)
@@ -123,6 +129,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	m.InitializeSubmissionMetrics(e.chainID)
 	m.InitializeBlockTimeSloThresholds(e.chainID)
 	m.InitializeBlockReceiveDelaySloThresholds(e.chainID)
+	m.InitializeVerifierMetrics(e.chainID)
 
 	// ticker to refresh submission duration metric every 10 seconds
 	refreshTicker := time.NewTicker(10 * time.Second)
@@ -153,6 +160,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 				e.logger.Warn().Msg("WebSocket subscription closed, reconnecting")
 			}
 			sub.Unsubscribe()
+			m.SetSubscriptionUp(false)
 			newSub := e.reconnectSubscription(ctx, headers)
 			if newSub == nil {
 				// context was cancelled during reconnection
@@ -160,16 +168,20 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 				return nil
 			}
 			sub = newSub
+			m.SetSubscriptionUp(true)
+			m.RecordWsReconnect(e.chainID)
 			e.logger.Info().Msg("WebSocket subscription re-established")
 		case <-refreshTicker.C:
 			// ensure that submission duration is always included in the 60 second window.
 			m.RefreshSubmissionDuration()
 			// update time since last block metric
 			m.UpdateTimeSinceLastBlock()
+			m.SetVerifierQueueLength(e.chainID, len(blockQueue))
 		case header := <-headers:
 			// record block arrival time for millisecond precision
 			arrivalTime := time.Now()
 			m.RecordBlockTime(e.chainID, arrivalTime)
+			m.RecordHeaderReceived(e.chainID, arrivalTime)
 			m.RecordBlockReceiveDelay(e.chainID, max(0, arrivalTime.Sub(time.Unix(int64(header.Time), 0))))
 
 			height := header.Number.Uint64()
@@ -182,7 +194,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 				workerGroup.Add(1)
 				go func(from, to uint64) {
 					defer workerGroup.Done()
-					e.backfill(ctx, blockQueue, from, to)
+					e.backfill(ctx, m, blockQueue, from, to)
 				}(lastHeight+1, height-1)
 			}
 			lastHeight = max(lastHeight, height)
@@ -202,7 +214,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 // reconnectSubscription attempts to re-establish the WebSocket block header subscription
 // with exponential backoff. Returns nil if the context is cancelled before reconnecting.
 func (e *exporter) reconnectSubscription(ctx context.Context, headers chan *types.Header) ethereum.Subscription {
-	backoff := 5 * time.Second
+	backoff := e.reconnectBackoff
 	const maxBackoff = 60 * time.Second
 
 	for {
@@ -228,8 +240,9 @@ func (e *exporter) reconnectSubscription(ctx context.Context, headers chan *type
 
 // backfill enqueues the blocks in [from, to] that were missed by the subscription,
 // keeping only the most recent maxBackfill heights.
-func (e *exporter) backfill(ctx context.Context, blockQueue chan<- job, from, to uint64) {
+func (e *exporter) backfill(ctx context.Context, m *metrics.Metrics, blockQueue chan<- job, from, to uint64) {
 	if n := to - from + 1; n > maxBackfill {
+		m.RecordBackfillDropped(e.chainID, n-maxBackfill)
 		e.logger.Warn().Uint64("dropped", n-maxBackfill).Uint64("from", from).Uint64("to", to).Msg("backfill gap too large, skipping oldest blocks")
 		from = to - maxBackfill + 1
 	}
@@ -246,6 +259,7 @@ func (e *exporter) backfill(ctx context.Context, blockQueue chan<- job, from, to
 		}
 		select {
 		case blockQueue <- job{header: header}:
+			m.RecordBackfill(e.chainID, 1)
 		case <-ctx.Done():
 			return
 		}
@@ -317,6 +331,7 @@ func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, blockQue
 	logger := e.logger.With().Str("namespace", namespace).Uint64("block_height", blockHeight).Logger()
 	if j.start.IsZero() {
 		j.start = time.Now()
+		m.AddInflightBlocks(e.chainID, 1)
 		logger.Debug().
 			Str("hash", header.Hash().Hex()).
 			Time("time", blockTime).
@@ -326,6 +341,7 @@ func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, blockQue
 	}
 
 	if e.verifyAttempt(ctx, m, logger, j.attempt+1, blockHeight, namespace, blockTime, j.start) {
+		m.AddInflightBlocks(e.chainID, -1)
 		return
 	}
 
@@ -337,6 +353,7 @@ func (e *exporter) verifyBlock(ctx context.Context, m *metrics.Metrics, blockQue
 
 	logger.Error().Msg("max retries exhausted: failed to verify block")
 	e.onVerified(m, namespace, blockHeight, 0, false, 0)
+	m.AddInflightBlocks(e.chainID, -1)
 	enqueueAfter(ctx, blockQueue, e.cooldown, job{header: header})
 }
 

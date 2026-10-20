@@ -76,6 +76,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
+- `--health-max-header-age`: Seconds without a new block header after which `/health` returns 503 (default: 0, which disables the age check so only the subscription state matters). See [Health Endpoint](#health-endpoint).
 - `--verbose`: Enable verbose (debug level) logging (default: false)
 - `--log-format`: Log output format, `console` (human-readable) or `json` (one JSON object per line, for Loki/ELK ingestion) (default: `console`)
 
@@ -216,6 +217,47 @@ The following metrics are exposed:
   - `0.9`: 3.0s
   - `0.95`: 5.0s
   - `0.99`: 10.0s
+
+### Verifier Self-Observability Metrics
+
+### `ev_metrics_verifier_queue_length`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Number of blocks waiting in the verifier queue, sampled every 10 seconds. A value that stays near the queue capacity (2 x `--verifier.workers`) means the verifier is falling behind.
+
+### `ev_metrics_verifier_inflight_blocks`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Blocks between their first verification attempt and being verified or running out of retries, including blocks waiting on a retry timer. A block re-queued after the cooldown is counted again.
+
+### `ev_metrics_ws_reconnects_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Number of times the block header WebSocket subscription was re-established after dropping.
+
+### `ev_metrics_last_header_received_timestamp`
+- **Type**: Gauge
+- **Labels**: `chain_id`
+- **Description**: Unix timestamp in seconds of the last block header received from the subscription (backfilled headers are not counted). It is 0 until the first header arrives.
+
+### `ev_metrics_verifier_backfilled_blocks_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Blocks enqueued after a gap in the header subscription (for example after a reconnect).
+
+### `ev_metrics_verifier_backfill_dropped_total`
+- **Type**: Counter
+- **Labels**: `chain_id`
+- **Description**: Blocks skipped because a subscription gap was larger than the 1000-block backfill cap. The oldest blocks are dropped.
+
+### Health Endpoint
+
+`GET /health` returns `200 OK`, or `503` with a short plain-text reason when:
+- the block header subscription has not been established yet (`not ready`),
+- the subscription is down (it is re-established automatically with backoff), or
+- `--health-max-header-age` is greater than 0 and no header has arrived within that many seconds (measured from the first subscription until a header arrives).
+
+Use `/health` as a **readiness** probe, not a liveness probe. With the age check enabled, a halted chain also fails it, and restarting the monitor would not fix that.
 
 ### JSON-RPC Monitoring Metrics
 

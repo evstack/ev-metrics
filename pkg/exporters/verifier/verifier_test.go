@@ -2,6 +2,7 @@ package verifier
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"slices"
 	"sync"
@@ -76,6 +77,7 @@ func (s fakeSub) Err() <-chan error { return s.err }
 type fakeHeads struct {
 	mu      sync.Mutex
 	ch      chan<- *types.Header
+	subs    []fakeSub
 	fetched []uint64
 }
 
@@ -83,7 +85,9 @@ func (f *fakeHeads) SubscribeNewHead(_ context.Context, ch chan<- *types.Header)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ch = ch
-	return fakeSub{err: make(chan error)}, nil
+	sub := fakeSub{err: make(chan error, 1)}
+	f.subs = append(f.subs, sub)
+	return sub, nil
 }
 
 func (f *fakeHeads) HeaderByNumber(_ context.Context, number *big.Int) (*types.Header, error) {
@@ -91,6 +95,12 @@ func (f *fakeHeads) HeaderByNumber(_ context.Context, number *big.Int) (*types.H
 	defer f.mu.Unlock()
 	f.fetched = append(f.fetched, number.Uint64())
 	return newHeader(number.Uint64()), nil
+}
+
+func (f *fakeHeads) subscriptions() []fakeSub {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.subs)
 }
 
 func (f *fakeHeads) fetchedHeights() []uint64 {
@@ -123,6 +133,7 @@ func newHarness(workers int, notYet map[uint64]int, retryIntervals ...time.Durat
 	h.e = NewMetricsExporter(h.blocks, h.da, h.heads, []byte("h"), []byte("d"), "chain", workers, zerolog.Nop()).(*exporter)
 	h.e.retryIntervals = retryIntervals
 	h.e.cooldown = time.Hour
+	h.e.reconnectBackoff = time.Millisecond
 	return h
 }
 
@@ -341,14 +352,103 @@ func TestExportMetricsRecordsReceiveDelayAndSloGauges(t *testing.T) {
 	}
 }
 
+func TestExportMetricsReconnectUpdatesCounterAndHealth(t *testing.T) {
+	h := newHarness(1, nil, 0, time.Millisecond)
+	if ok, _ := h.m.CheckHealth(0); ok {
+		t.Fatal("expected not ready before the subscription is established")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- h.e.ExportMetrics(ctx, h.m) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+
+	eventually(t, "not subscribed", func() bool { return len(h.heads.subscriptions()) == 1 })
+	if ok, reason := h.m.CheckHealth(0); !ok {
+		t.Fatalf("expected healthy after subscribing, got %q", reason)
+	}
+	if got := h.metric(t, "ws_reconnects_total"); got != 0 {
+		t.Fatalf("expected no reconnects yet, got %v", got)
+	}
+
+	h.heads.subs[0].err <- errors.New("dropped")
+
+	eventually(t, "reconnect not counted", func() bool { return h.metric(t, "ws_reconnects_total") == 1 })
+	eventually(t, "health not restored", func() bool {
+		ok, _ := h.m.CheckHealth(0)
+		return ok
+	})
+	if got := len(h.heads.subscriptions()); got != 2 {
+		t.Fatalf("expected 2 subscriptions, got %d", got)
+	}
+}
+
+func TestExportMetricsRecordsLastHeaderAndInflightGauges(t *testing.T) {
+	h := newHarness(1, map[uint64]int{1: -1}, 0, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- h.e.ExportMetrics(ctx, h.m) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+
+	if got := h.metric(t, "last_header_received_timestamp"); got != 0 {
+		t.Fatalf("expected zero timestamp before any header, got %v", got)
+	}
+	eventually(t, "not subscribed", func() bool { return len(h.heads.subscriptions()) == 1 })
+	h.heads.mu.Lock()
+	ch := h.heads.ch
+	h.heads.mu.Unlock()
+	ch <- newHeader(1)
+
+	eventually(t, "last header not recorded", func() bool { return h.metric(t, "last_header_received_timestamp") > 0 })
+	eventually(t, "block not in flight", func() bool { return h.metric(t, "verifier_inflight_blocks") == 1 })
+	if ok, reason := h.m.CheckHealth(time.Minute); !ok {
+		t.Fatalf("expected healthy with a fresh header, got %q", reason)
+	}
+}
+
+func TestInflightGaugeReturnsToZeroOnceVerified(t *testing.T) {
+	h := newHarness(1, map[uint64]int{1: 2}, 0, time.Millisecond, time.Millisecond)
+	queue, _ := h.startWorkers(t)
+
+	queue <- job{header: newHeader(1)}
+
+	eventually(t, "block not verified", func() bool { return len(h.da.verifiedHeights()) == 1 })
+	eventually(t, "inflight not decremented", func() bool { return h.metric(t, "verifier_inflight_blocks") == 0 })
+}
+
+func TestInflightGaugeReturnsToZeroOnExhaustion(t *testing.T) {
+	h := newHarness(1, map[uint64]int{1: -1}, 0, time.Millisecond)
+	queue, _ := h.startWorkers(t)
+
+	queue <- job{header: newHeader(1)}
+
+	eventually(t, "missing block not recorded", func() bool { return h.metric(t, "unsubmitted_blocks_total") == 1 })
+	eventually(t, "inflight not decremented", func() bool { return h.metric(t, "verifier_inflight_blocks") == 0 })
+}
+
 func TestBackfillCapsGap(t *testing.T) {
 	h := newHarness(1, nil)
 	queue := make(chan job, maxBackfill+10)
 
-	h.e.backfill(context.Background(), queue, 1, maxBackfill+5)
+	h.e.backfill(context.Background(), h.m, queue, 1, maxBackfill+5)
 
 	if got := len(queue); got != maxBackfill {
 		t.Fatalf("expected %d backfilled jobs, got %d", maxBackfill, got)
+	}
+	if got := h.metric(t, "verifier_backfilled_blocks_total"); got != maxBackfill {
+		t.Fatalf("expected %d backfilled blocks counted, got %v", maxBackfill, got)
+	}
+	if got := h.metric(t, "verifier_backfill_dropped_total"); got != 5 {
+		t.Fatalf("expected 5 dropped blocks counted, got %v", got)
 	}
 	if first := (<-queue).header.Number.Uint64(); first != 6 {
 		t.Fatalf("expected backfill to keep the most recent heights starting at 6, got %d", first)
