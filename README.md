@@ -328,18 +328,4 @@ When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
 
 ## Debug Logging
 
-There are two independent debug logging mechanisms:
-
-- `--verbose` flag: sets the application log level to debug. Per-block and per-poll success messages (block verification, drift polls, balance checks, JSON-RPC health checks) are logged at debug level, so use `--verbose` to see them. Warnings and errors are always logged.
-- `EVMETRICS_DEBUG=true` environment variable: logs DA submission details from the metrics package.
-
-**Use cases**: Troubleshoot submission failures, verify submission flow.
-
-**`EVMETRICS_DEBUG` logs include**: Successful/failed submission attempts and DA height updates.
-
-**Example**:
-```bash
-# Enable debug logging
-export EVMETRICS_DEBUG=true
-./ev-metrics monitor --header-namespace testnet_header --data-namespace testnet_data
-```
+Use the `--verbose` flag to set the application log level to debug. It is the single way to get debug output: per-block, per-poll (drift, balance, JSON-RPC health checks) and per-verification success messages. Warnings and errors are always logged.

@@ -2,10 +2,7 @@ package metrics
 
 import (
 	"fmt"
-	"log"
-	"os"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,11 +97,6 @@ type Metrics struct {
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
-}
-
-// isDebugEnabled returns true if debug logging is enabled via environment variable
-func isDebugEnabled() bool {
-	return strings.ToLower(os.Getenv("EVMETRICS_DEBUG")) == "true"
 }
 
 type blockRange struct {
@@ -437,13 +429,6 @@ func (m *Metrics) RecordSubmissionAttempt(chainID, submissionType string, succes
 
 	if success {
 		m.LastSuccessfulSubmissionTime.WithLabelValues(chainID, submissionType).Set(float64(now.Unix()))
-		if isDebugEnabled() {
-			log.Printf("DEBUG: Successful submission - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
-		}
-	} else {
-		if isDebugEnabled() {
-			log.Printf("DEBUG: Failed submission attempt - chain: %s, type: %s, timestamp: %d", chainID, submissionType, now.Unix())
-		}
 	}
 }
 
@@ -456,15 +441,6 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 		if daHeight > m.latestHeaderDaHeight {
 			m.latestHeaderDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "header").Set(float64(daHeight))
-			// Debug log when submission DA height is recorded
-			if isDebugEnabled() {
-				log.Printf("DEBUG: Recorded header submission DA height - chain: %s, height: %d", chainID, daHeight)
-			}
-		} else {
-			// Debug log when DA height is not higher than previous
-			if isDebugEnabled() {
-				log.Printf("DEBUG: Header DA height %d not higher than previous %d for chain %s", daHeight, m.latestHeaderDaHeight, chainID)
-			}
 		}
 		return
 	}
@@ -473,15 +449,6 @@ func (m *Metrics) RecordSubmissionDaHeight(chainID, submissionType string, daHei
 		if daHeight > m.latestDataDaHeight {
 			m.latestDataDaHeight = daHeight
 			m.SubmissionDaHeight.WithLabelValues(chainID, "data").Set(float64(daHeight))
-			// Debug log when submission DA height is recorded
-			if isDebugEnabled() {
-				log.Printf("DEBUG: Recorded data submission DA height - chain: %s, height: %d", chainID, daHeight)
-			}
-		} else {
-			// Debug log when DA height is not higher than previous
-			if isDebugEnabled() {
-				log.Printf("DEBUG: Data DA height %d not higher than previous %d for chain %s", daHeight, m.latestDataDaHeight, chainID)
-			}
 		}
 	}
 }
