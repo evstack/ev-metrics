@@ -241,6 +241,8 @@ When `--evm-rpc-url` is provided:
 
 When `--reference-node` and `--full-nodes` are provided:
 
+Endpoint labels (here and in the balance metrics below) and logs show only `scheme://host[:port]`, so credentials in endpoint URLs (userinfo, path, query) are not exposed. Endpoints that redact to the same value get a `#<index>` suffix to stay distinct.
+
 ### `ev_metrics_reference_block_height`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `endpoint`
