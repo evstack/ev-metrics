@@ -175,8 +175,6 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			m.RecordWsReconnect(e.chainID)
 			e.logger.Info().Msg("WebSocket subscription re-established")
 		case <-refreshTicker.C:
-			// ensure that submission duration is always included in the 60 second window.
-			m.RefreshSubmissionDuration()
 			// update time since last block metric
 			m.UpdateTimeSinceLastBlock()
 			m.SetVerifierQueueLength(e.chainID, len(blockQueue))

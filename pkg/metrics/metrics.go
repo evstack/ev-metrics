@@ -29,7 +29,10 @@ type Metrics struct {
 	// BlockHeightDrift tracks the drift between reference and target endpoints for a specific node.
 	BlockHeightDrift *prometheus.GaugeVec
 	// SubmissionDuration tracks DA blob submission duration percentiles over a rolling window.
+	// Only real observations are recorded, so quantiles are NaN while no submission is verified.
 	SubmissionDuration *prometheus.SummaryVec
+	// LastSubmissionDuration tracks the duration of the most recently verified submission.
+	LastSubmissionDuration *prometheus.GaugeVec
 	// SubmissionDaHeight tracks the DA height at which blocks were submitted.
 	SubmissionDaHeight *prometheus.GaugeVec
 	// SubmissionAttemptsTotal tracks the total number of submission attempts.
@@ -94,9 +97,6 @@ type Metrics struct {
 
 	// internal tracking for block time calculation (uses arrival time for ms precision)
 	lastBlockArrivalTime map[string]time.Time // key: chainID
-
-	// lastSubmissionDurations tracks the most recent submission durations.
-	lastSubmissionDurations map[string]time.Duration // key: chainID:namespace
 
 	mu     sync.Mutex
 	ranges map[string][]*blockRange // key: blobType -> sorted slice of ranges
@@ -182,6 +182,14 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 				},
 				MaxAge:     60 * time.Second,
 				AgeBuckets: 6,
+			},
+			[]string{"chain_id", "type"},
+		),
+		LastSubmissionDuration: factory.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: namespace,
+				Name:      "last_submission_duration_seconds",
+				Help:      "duration from block creation to da availability of the most recently verified submission",
 			},
 			[]string{"chain_id", "type"},
 		),
@@ -404,9 +412,8 @@ func NewWithRegistry(namespace string, registerer prometheus.Registerer) *Metric
 			},
 			[]string{"chain_id"},
 		),
-		ranges:                  make(map[string][]*blockRange),
-		lastBlockArrivalTime:    make(map[string]time.Time),
-		lastSubmissionDurations: make(map[string]time.Duration),
+		ranges:               make(map[string][]*blockRange),
+		lastBlockArrivalTime: make(map[string]time.Time),
 	}
 
 	return m
@@ -684,28 +691,8 @@ func (m *Metrics) RecordBlockHeightDrift(chainID, targetEndpoint string, referen
 
 // RecordSubmissionDuration records the da submission duration for a given submission type
 func (m *Metrics) RecordSubmissionDuration(chainID, submissionType string, duration time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.SubmissionDuration.WithLabelValues(chainID, submissionType).Observe(duration.Seconds())
-
-	key := fmt.Sprintf("%s:%s", chainID, submissionType)
-	m.lastSubmissionDurations[key] = duration
-
-}
-
-// RefreshSubmissionDuration re-observes the last known submission duration to keep the metric alive.
-func (m *Metrics) RefreshSubmissionDuration() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	for key, duration := range m.lastSubmissionDurations {
-		// assuming format "chainID:namespace"
-		parts := strings.Split(key, ":")
-		if len(parts) == 2 {
-			m.SubmissionDuration.WithLabelValues(parts[0], parts[1]).Observe(duration.Seconds())
-		}
-	}
+	m.LastSubmissionDuration.WithLabelValues(chainID, submissionType).Set(duration.Seconds())
 }
 
 // RecordBlockTime records the time between consecutive blocks using arrival time

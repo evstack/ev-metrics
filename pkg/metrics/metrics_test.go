@@ -547,20 +547,26 @@ func TestMetrics_RecordSubmissionDuration(t *testing.T) {
 	m.RecordSubmissionDuration("chain1", "data", 10*time.Second)
 	m.RecordSubmissionDuration("chain2", "header", 3*time.Second)
 
-	// verify stored in memory
-	require.Equal(t, 6*time.Second, m.lastSubmissionDurations["chain1:header"], "last submission duration should be present")
-	require.Equal(t, 10*time.Second, m.lastSubmissionDurations["chain1:data"])
-	require.Equal(t, 3*time.Second, m.lastSubmissionDurations["chain2:header"])
-}
+	// the gauge holds the latest value per chain and type
+	last := func(chain, typ string) float64 {
+		return getMetricValue(t, reg, "test_last_submission_duration_seconds", map[string]string{"chain_id": chain, "type": typ})
+	}
+	require.Equal(t, 6.0, last("chain1", "header"), "last submission duration should be the most recent one")
+	require.Equal(t, 10.0, last("chain1", "data"))
+	require.Equal(t, 3.0, last("chain2", "header"))
 
-func TestMetrics_RefreshSubmissionDuration_Empty(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	m := NewWithRegistry("test", reg)
-
-	// call refresh without any recorded values - should not panic
-	require.NotPanics(t, func() {
-		m.RefreshSubmissionDuration()
-	})
+	// the summary only counts real observations: 4 calls above, none fabricated
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var count uint64
+	for _, mf := range families {
+		if mf.GetName() == "test_submission_duration_seconds" {
+			for _, metric := range mf.GetMetric() {
+				count += metric.GetSummary().GetSampleCount()
+			}
+		}
+	}
+	require.EqualValues(t, 4, count)
 }
 
 func TestMetrics_RecordSubmissionAttempt(t *testing.T) {

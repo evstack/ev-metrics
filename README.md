@@ -147,7 +147,12 @@ Blocks without transactions have only their header blob verified (`type="header"
 ### `ev_metrics_submission_duration_seconds`
 - **Type**: Summary
 - **Labels**: `chain_id`, `type`
-- **Description**: DA blob submission duration from block creation to DA availability
+- **Description**: DA blob submission duration from block creation to DA availability, over a 60-second rolling window. It only contains real observations, so the quantiles are `NaN` while no submission has been verified in the last 60 seconds. Use `ev_metrics_last_submission_duration_seconds` to see the latest value during quiet periods.
+
+### `ev_metrics_last_submission_duration_seconds`
+- **Type**: Gauge
+- **Labels**: `chain_id`, `type`
+- **Description**: Duration from block creation to DA availability of the most recently verified submission. It keeps its value until the next submission is verified and is absent until the first one.
 
 ### `ev_metrics_submission_da_height`
 - **Type**: Gauge
