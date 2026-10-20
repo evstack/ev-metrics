@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -33,6 +34,7 @@ const (
 	flagDataNS                = "data-namespace"
 	flagDuration              = "duration"
 	flagVerbose               = "verbose"
+	flagLogFormat             = "log-format"
 	flagPort                  = "port"
 	flagChain                 = "chain-id"
 	flagReferenceNode         = "reference-node"
@@ -59,6 +61,7 @@ type flagValues struct {
 	dataNS                string
 	duration              int
 	verbose               bool
+	logFormat             string
 	port                  int
 	chainID               string
 	referenceNode         string
@@ -92,6 +95,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().StringVar(&flags.dataNS, flagDataNS, "", "Data namespace (my_app_data_namespace)")
 	cmd.Flags().IntVar(&flags.duration, flagDuration, 0, "Duration in seconds to stream (0 = infinite)")
 	cmd.Flags().BoolVar(&flags.verbose, flagVerbose, false, "Enable verbose logging")
+	cmd.Flags().StringVar(&flags.logFormat, flagLogFormat, "console", "Log output format: console or json")
 	cmd.Flags().IntVar(&flags.port, flagPort, 2112, "HTTP server port for metrics")
 	cmd.Flags().StringVar(&flags.chainID, flagChain, "testnet", "chainID identifier for metrics labels")
 	cmd.Flags().StringVar(&flags.referenceNode, flagReferenceNode, "", "Reference node RPC endpoint URL (sequencer) for drift monitoring")
@@ -159,17 +163,27 @@ func newClients(ctx context.Context, flags flagValues, logger zerolog.Logger) (*
 	return evnodeClient, evmClient, celestiaClient, nil
 }
 
-func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
-	// Setup logger
+func newLogger(format string, verbose bool, w io.Writer) (zerolog.Logger, error) {
+	switch format {
+	case "console":
+		w = zerolog.ConsoleWriter{Out: w, TimeFormat: time.RFC3339}
+	case "json":
+	default:
+		return zerolog.Logger{}, fmt.Errorf("invalid --%s %q: must be console or json", flagLogFormat, format)
+	}
+
 	logLevel := zerolog.InfoLevel
-	if flags.verbose {
+	if verbose {
 		logLevel = zerolog.DebugLevel
 	}
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
-		Level(logLevel).
-		With().
-		Timestamp().
-		Logger()
+	return zerolog.New(w).Level(logLevel).With().Timestamp().Logger(), nil
+}
+
+func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
+	logger, err := newLogger(flags.logFormat, flags.verbose, os.Stdout)
+	if err != nil {
+		return err
+	}
 
 	// setup context with signal handling for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

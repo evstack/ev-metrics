@@ -76,7 +76,7 @@ func performHealthCheck(
 	m.RecordEndpointAvailability(chainID, "jsonrpc", true)
 	m.RecordJsonRpcRequestDuration(chainID, duration)
 
-	logger.Info().
+	logger.Debug().
 		Dur("duration", duration).
 		Float64("duration_seconds", duration.Seconds()).
 		Msg("JSON-RPC health check completed")
