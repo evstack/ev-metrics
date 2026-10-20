@@ -248,8 +248,8 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 
 	err = metrics.StartServer(ctx, metricsPath, flags.port, logger, exporters...)
 
-	// context.Canceled is expected during graceful shutdown, not an error
-	if err != nil && !errors.Is(err, context.Canceled) {
+	// context.Canceled (shutdown) and context.DeadlineExceeded (--duration) are clean exits
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 
