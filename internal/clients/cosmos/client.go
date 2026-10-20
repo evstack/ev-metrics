@@ -2,13 +2,16 @@ package cosmos
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -20,25 +23,40 @@ type Client struct {
 	logger     zerolog.Logger
 }
 
-// stripScheme removes http:// or https:// prefix from endpoint
-func stripScheme(endpoint string) string {
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-	endpoint = strings.TrimPrefix(endpoint, "https://")
-	return endpoint
+// parseEndpoint converts an endpoint URL into a gRPC "host:port" target and reports whether TLS
+// should be used. https:// endpoints use TLS and default to port 443; http:// and bare host:port
+// endpoints are plaintext. Any path is dropped.
+func parseEndpoint(endpoint string) (target string, useTLS bool) {
+	useTLS = strings.HasPrefix(endpoint, "https://")
+	target = strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://")
+	if i := strings.IndexByte(target, '/'); i >= 0 {
+		target = target[:i]
+	}
+	if useTLS {
+		if _, _, err := net.SplitHostPort(target); err != nil {
+			target = net.JoinHostPort(strings.Trim(target, "[]"), "443")
+		}
+	}
+	return target, useTLS
 }
 
 // NewClient creates a new Cosmos SDK client connected to the given endpoint
 func NewClient(endpoint string, logger zerolog.Logger) (*Client, error) {
-	// grpc expects "host:port" not "http://host:port"
-	grpcEndpoint := stripScheme(endpoint)
+	grpcEndpoint, useTLS := parseEndpoint(endpoint)
 
-	conn, err := grpc.NewClient(grpcEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if useTLS {
+		creds = credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
+	}
+
+	conn, err := grpc.NewClient(grpcEndpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", grpcEndpoint, err)
 	}
 
 	logger.Debug().
 		Str("endpoint", grpcEndpoint).
+		Bool("tls", useTLS).
 		Msg("established connection to cosmos endpoint")
 
 	return &Client{

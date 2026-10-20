@@ -119,6 +119,8 @@ Monitor native token balances for one or more Celestia addresses:
 
 This will query account balances every 30 seconds with automatic failover between RPC endpoints.
 
+`https://` consensus endpoints are dialed over TLS (port 443 if none is given); `http://` and bare `host:port` endpoints use plaintext gRPC.
+
 ## Prometheus Metrics
 
 The following metrics are exposed:
