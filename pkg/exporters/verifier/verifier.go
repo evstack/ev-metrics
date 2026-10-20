@@ -121,6 +121,8 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 	// pre-initialize submission metrics so both blob types are always visible
 	// in Prometheus output, even before any block has been fully processed.
 	m.InitializeSubmissionMetrics(e.chainID)
+	m.InitializeBlockTimeSloThresholds(e.chainID)
+	m.InitializeBlockReceiveDelaySloThresholds(e.chainID)
 
 	// ticker to refresh submission duration metric every 10 seconds
 	refreshTicker := time.NewTicker(10 * time.Second)
@@ -168,6 +170,7 @@ func (e *exporter) ExportMetrics(ctx context.Context, m *metrics.Metrics) error 
 			// record block arrival time for millisecond precision
 			arrivalTime := time.Now()
 			m.RecordBlockTime(e.chainID, arrivalTime)
+			m.RecordBlockReceiveDelay(e.chainID, max(0, arrivalTime.Sub(time.Unix(int64(header.Time), 0))))
 
 			height := header.Number.Uint64()
 			e.logger.Debug().

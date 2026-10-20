@@ -194,7 +194,7 @@ The following metrics are exposed:
 ### `ev_metrics_block_time_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block time (not yet emitted, see #44)
+- **Description**: SLO thresholds for block time
 - **Values**:
   - `0.5`: 2.0s
   - `0.9`: 3.0s
@@ -204,13 +204,13 @@ The following metrics are exposed:
 ### `ev_metrics_block_receive_delay_seconds`
 - **Type**: Histogram
 - **Labels**: `chain_id`
-- **Description**: Delay between block creation and reception with histogram buckets (not yet emitted, see #44)
+- **Description**: Delay between block creation (`header.Time`) and reception with histogram buckets. Only headers received from the subscription are observed (not backfilled ones), and negative values from clock skew are recorded as 0. `header.Time` has 1-second resolution, so the value is only accurate to about ±1s.
 - **Buckets**: 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0 seconds
 
 ### `ev_metrics_block_receive_delay_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block receive delay (not yet emitted, see #44)
+- **Description**: SLO thresholds for block receive delay
 - **Values**:
   - `0.5`: 1.0s
   - `0.9`: 3.0s

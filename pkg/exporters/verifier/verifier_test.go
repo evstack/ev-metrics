@@ -173,6 +173,24 @@ func (h *harness) metric(t *testing.T, name string) float64 {
 	return sum
 }
 
+func (h *harness) sum(t *testing.T, name string) float64 {
+	t.Helper()
+	families, err := h.reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum float64
+	for _, mf := range families {
+		if mf.GetName() != "test_"+name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			sum += m.GetHistogram().GetSampleSum()
+		}
+	}
+	return sum
+}
+
 func eventually(t *testing.T, msg string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -284,6 +302,42 @@ func TestExportMetricsBackfillsGap(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("ExportMetrics did not return after context cancellation")
+	}
+}
+
+func TestExportMetricsRecordsReceiveDelayAndSloGauges(t *testing.T) {
+	h := newHarness(1, nil, 0, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- h.e.ExportMetrics(ctx, h.m) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+
+	eventually(t, "not subscribed", func() bool {
+		h.heads.mu.Lock()
+		defer h.heads.mu.Unlock()
+		return h.heads.ch != nil
+	})
+	header := newHeader(1)
+	header.Time = uint64(time.Now().Add(-3 * time.Second).Unix())
+	h.heads.ch <- header
+
+	eventually(t, "receive delay not recorded", func() bool { return h.metric(t, "block_receive_delay_seconds") == 1 })
+	if got := h.metric(t, "block_receive_delay_seconds"); got != 1 {
+		t.Fatalf("expected 1 receive delay observation, got %v", got)
+	}
+	if got := h.sum(t, "block_receive_delay_seconds"); got < 2 || got > 5 {
+		t.Fatalf("expected a delay of about 3s, got %v", got)
+	}
+	if got := h.metric(t, "block_time_slo_seconds"); got != 2+3+4+5 {
+		t.Fatalf("unexpected block time SLO gauges sum %v", got)
+	}
+	if got := h.metric(t, "block_receive_delay_slo_seconds"); got != 1+3+5+10 {
+		t.Fatalf("unexpected receive delay SLO gauges sum %v", got)
 	}
 }
 
