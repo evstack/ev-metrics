@@ -33,7 +33,8 @@ func StartServer(ctx context.Context, metricsPath string, port int, logger zerol
 	// initialize metrics (thread-safe, shared across all exporters)
 	m := New("ev_metrics")
 
-	var g errgroup.Group
+	// derived ctx is cancelled when any exporter or the server fails, stopping everything else
+	g, ctx := errgroup.WithContext(ctx)
 
 	// start all metric exporters
 	for _, exporter := range exporters {

@@ -8,7 +8,7 @@ Data Availability metrics and monitoring tool for evstack using Celestia DA. Thi
 - Automatic verification of header and data blobs on Celestia
 - Retry logic with exponential backoff for pending DA submissions
 - Prometheus metrics for tracking unverified block ranges
-- Support for both streaming and one-shot block verification modes
+- Streaming block verification of every new block
 - Account balance monitoring via Celestia consensus RPC with automatic failover
 
 ## Quick Start
@@ -38,13 +38,14 @@ The monitor command streams EVM block headers and verifies DA submission on Cele
 ```
 
 
-### Enable Prometheus Metrics
+### Prometheus Metrics Endpoint
+
+The Prometheus metrics server always runs. Use `--port` to change the port:
 
 ```bash
 ./ev-metrics monitor \
   --header-namespace collect_testnet_header \
   --data-namespace collect_testnet_data \
-  --enable-metrics \
   --port 2112
 ```
 
@@ -66,7 +67,6 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--celestia-token`: Celestia authentication token (optional), sent as a `Bearer` token on all Celestia requests, including block timestamp lookups. Required when the celestia-node has auth enabled (the default).
 - `--duration`: Duration in seconds to stream (0 = infinite)
 - `--chain-id`: Chain identifier for metrics labels (default: "testnet")
-- `--enable-metrics`: Enable Prometheus metrics HTTP server (default: false)
 - `--port`: HTTP server port for metrics (default: 2112)
 - `--jsonrpc-scrape-interval`: JSON-RPC health check scrape interval in seconds (default: 10)
 - `--reference-node`: Reference node RPC endpoint URL (sequencer) for drift monitoring
@@ -76,8 +76,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
-- `--verbose`: Enable verbose logging (default: false)
-- `--debug`: Enable debug logging for submission details (default: false, can also be set via `EVMETRICS_DEBUG=true` environment variable)
+- `--verbose`: Enable verbose (debug level) logging (default: false)
 
 ### Example with Custom Endpoints
 
@@ -100,7 +99,6 @@ Enable JSON-RPC request duration monitoring by providing the `--evm-rpc-url` fla
   --data-namespace collect_testnet_data \
   --evm-ws-url "ws://localhost:8546" \
   --evm-rpc-url "http://localhost:8545" \
-  --enable-metrics \
   --jsonrpc-scrape-interval 10
 ```
 
@@ -116,15 +114,14 @@ Monitor native token balances for one or more Celestia addresses:
   --data-namespace collect_testnet_data \
   --balance.addresses "celestia1abc...,celestia1def..." \
   --balance.consensus-rpc-urls "https://rpc.celestia.org,https://rpc-mocha.pops.one" \
-  --balance.scrape-interval 30 \
-  --enable-metrics
+  --balance.scrape-interval 30
 ```
 
 This will query account balances every 30 seconds with automatic failover between RPC endpoints.
 
 ## Prometheus Metrics
 
-When metrics are enabled, the following metrics are exposed:
+The following metrics are exposed:
 
 ### `ev_metrics_unsubmitted_block_range_start`
 - **Type**: Gauge
@@ -194,7 +191,7 @@ When metrics are enabled, the following metrics are exposed:
 ### `ev_metrics_block_time_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block time
+- **Description**: SLO thresholds for block time (not yet emitted, see #44)
 - **Values**:
   - `0.5`: 2.0s
   - `0.9`: 3.0s
@@ -204,13 +201,13 @@ When metrics are enabled, the following metrics are exposed:
 ### `ev_metrics_block_receive_delay_seconds`
 - **Type**: Histogram
 - **Labels**: `chain_id`
-- **Description**: Delay between block creation and reception with histogram buckets
+- **Description**: Delay between block creation and reception with histogram buckets (not yet emitted, see #44)
 - **Buckets**: 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0 seconds
 
 ### `ev_metrics_block_receive_delay_slo_seconds`
 - **Type**: Gauge
 - **Labels**: `chain_id`, `quantile`
-- **Description**: SLO thresholds for block receive delay
+- **Description**: SLO thresholds for block receive delay (not yet emitted, see #44)
 - **Values**:
   - `0.5`: 1.0s
   - `0.9`: 3.0s
@@ -277,11 +274,14 @@ When `--balance.addresses` and `--balance.consensus-rpc-urls` are provided:
 
 ## Debug Logging
 
-Debug logging provides detailed visibility into DA submission process. Enable with `--debug` flag or `EVMETRICS_DEBUG=true` environment variable.
+There are two independent debug logging mechanisms:
 
-**Use cases**: Troubleshoot submission failures, verify submission flow, diagnose Celestia RPC issues.
+- `--verbose` flag: sets the application log level to debug.
+- `EVMETRICS_DEBUG=true` environment variable: logs DA submission details from the metrics package.
 
-**Logs include**: Successful/failed submissions, DA height updates, submission timing.
+**Use cases**: Troubleshoot submission failures, verify submission flow.
+
+**`EVMETRICS_DEBUG` logs include**: Successful/failed submission attempts and DA height updates.
 
 **Example**:
 ```bash
