@@ -21,7 +21,7 @@ type blockSource interface {
 
 type daVerifier interface {
 	GetBlockTimestamp(ctx context.Context, daHeight uint64) (time.Time, error)
-	VerifyBlobAtHeight(ctx context.Context, blob []byte, daHeight uint64, namespace []byte) (bool, error)
+	VerifyHeaderBlobAtHeight(ctx context.Context, signedHeaderBlob []byte, daHeight uint64, namespace []byte) (bool, error)
 	VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob []byte, daHeight uint64, namespace []byte) (bool, error)
 }
 
@@ -413,7 +413,7 @@ func (e *exporter) verifyAttempt(ctx context.Context, m *metrics.Metrics, logger
 
 	if !j.headerDone {
 		j.headerDone = verifyPart("header", blockResultWithBlobs.HeaderDaHeight, func(daHeight uint64) (bool, error) {
-			return e.celestiaClient.VerifyBlobAtHeight(attemptCtx, blockResultWithBlobs.HeaderBlob, daHeight, e.headerNS)
+			return e.celestiaClient.VerifyHeaderBlobAtHeight(attemptCtx, blockResultWithBlobs.HeaderBlob, daHeight, e.headerNS)
 		})
 	}
 

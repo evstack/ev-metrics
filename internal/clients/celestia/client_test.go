@@ -12,9 +12,11 @@ import (
 
 	libshare "github.com/celestiaorg/go-square/v3/share"
 	"github.com/evstack/ev-node/pkg/da/jsonrpc"
+	evnode "github.com/evstack/ev-node/types/pb/evnode/v1"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestGetBlockTimestamp_AuthorizationHeader(t *testing.T) {
@@ -211,6 +213,60 @@ func TestGetBlobsAtHeight_Cache(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, blobs, 1)
 			require.EqualValues(t, 2, calls.Load())
+		})
+	}
+}
+
+func TestVerifyHeaderBlobAtHeight(t *testing.T) {
+	ns := libshare.MustNewV0Namespace([]byte("ev-metrics"))
+	signed := &evnode.SignedHeader{
+		Header:    &evnode.Header{Height: 7, ChainId: "test"},
+		Signature: []byte("sig"),
+		Signer:    &evnode.Signer{Address: []byte("addr"), PubKey: []byte("pub")},
+	}
+	stored, err := proto.Marshal(signed)
+	require.NoError(t, err)
+	envelope, err := proto.Marshal(&evnode.DAHeaderEnvelope{
+		Header: signed.Header, Signature: signed.Signature, Signer: signed.Signer,
+		EnvelopeSignature: []byte("envelope-sig"),
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, stored, envelope)
+
+	other, err := proto.Marshal(&evnode.DAHeaderEnvelope{Header: &evnode.Header{Height: 8}, EnvelopeSignature: []byte("x")})
+	require.NoError(t, err)
+
+	newClient := func(published ...[]byte) *Client {
+		return &Client{
+			logger:   zerolog.Nop(),
+			cacheTTL: time.Minute,
+			getAll: func(context.Context, uint64, []libshare.Namespace) ([]*jsonrpc.Blob, error) {
+				var blobs []*jsonrpc.Blob
+				for _, p := range published {
+					b, err := jsonrpc.NewBlobV0(ns, p)
+					require.NoError(t, err)
+					blobs = append(blobs, b)
+				}
+				return blobs, nil
+			},
+		}
+	}
+
+	tests := map[string]struct {
+		published [][]byte
+		want      bool
+	}{
+		"envelope blob":          {[][]byte{other, envelope}, true},
+		"legacy signed header":   {[][]byte{stored}, true},
+		"different header":       {[][]byte{other}, false},
+		"nothing at this height": {nil, false},
+		"undecodable blob":       {[][]byte{{0xff, 0xff}, envelope}, true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := newClient(tt.published...).VerifyHeaderBlobAtHeight(context.Background(), stored, 5, ns.Bytes())
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
