@@ -58,7 +58,7 @@ func TestExportMetrics_FailoverAndClientReuse(t *testing.T) {
 
 	reg := prometheus.NewRegistry()
 	m := metrics.NewWithRegistry("test", reg)
-	e := NewMetricsExporter("chain", []string{"addr1", "addr2"}, []string{deadAddr, "http://" + lis.Addr().String()}, 60, zerolog.Nop()).(*exporter)
+	e := NewMetricsExporter("chain", []string{"addr1", "addr2"}, []string{deadAddr, "http://" + lis.Addr().String()}, "", 60, zerolog.Nop()).(*exporter)
 	e.rpcTimeout = time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +118,7 @@ func TestExportMetrics_EndpointSecretsNeverExposed(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.NewWithRegistry("test", reg)
 	endpoints := []string{"http://" + deadAddr + "/v1/" + secret, "http://" + lis.Addr().String() + "/v1/" + secret}
-	e := NewMetricsExporter("chain", []string{"addr1"}, endpoints, 60, logger).(*exporter)
+	e := NewMetricsExporter("chain", []string{"addr1"}, endpoints, "", 60, logger).(*exporter)
 	e.rpcTimeout = time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())

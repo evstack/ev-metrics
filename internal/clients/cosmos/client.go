@@ -13,11 +13,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
 
 // Client wraps a Cosmos SDK bank query client
 type Client struct {
 	endpoint   string
+	token      string
 	conn       *grpc.ClientConn
 	bankClient banktypes.QueryClient
 	logger     zerolog.Logger
@@ -44,8 +46,9 @@ func parseEndpoint(endpoint string) (target string, useTLS bool) {
 	return target, useTLS
 }
 
-// NewClient creates a new Cosmos SDK client connected to the given endpoint
-func NewClient(endpoint string, logger zerolog.Logger) (*Client, error) {
+// NewClient creates a new Cosmos SDK client connected to the given endpoint. A non-empty token is
+// sent as x-token gRPC metadata on every query (as required by DA-proxy).
+func NewClient(endpoint, token string, logger zerolog.Logger) (*Client, error) {
 	grpcEndpoint, useTLS := parseEndpoint(endpoint)
 
 	creds := insecure.NewCredentials()
@@ -65,6 +68,7 @@ func NewClient(endpoint string, logger zerolog.Logger) (*Client, error) {
 
 	return &Client{
 		endpoint:   grpcEndpoint,
+		token:      token,
 		conn:       conn,
 		bankClient: banktypes.NewQueryClient(conn),
 		logger:     logger.With().Str("component", "cosmos_client").Logger(),
@@ -73,6 +77,11 @@ func NewClient(endpoint string, logger zerolog.Logger) (*Client, error) {
 
 // GetBalance queries the balance of an address
 func (c *Client) GetBalance(ctx context.Context, address string) (types.Coins, error) {
+	// simplify: the token is also sent over plaintext http:// endpoints (private in-cluster use);
+	// switch to grpc.WithPerRPCCredentials with RequireTransportSecurity to enforce TLS.
+	if c.token != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-token", c.token)
+	}
 	resp, err := c.bankClient.AllBalances(ctx, &banktypes.QueryAllBalancesRequest{
 		Address: address,
 	})

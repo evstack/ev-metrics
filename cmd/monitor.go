@@ -44,6 +44,7 @@ const (
 	flagJsonRpcScrapeInterval = "jsonrpc-scrape-interval"
 	flagBalanceAddresses      = "balance.addresses"
 	flagBalanceRpcUrls        = "balance.consensus-rpc-urls"
+	flagBalanceToken          = "balance.token"
 	flagBalanceScrapeInterval = "balance.scrape-interval"
 	flagVerifierWorkers       = "verifier.workers"
 	flagHealthMaxHeaderAge    = "health-max-header-age"
@@ -72,6 +73,7 @@ type flagValues struct {
 	jsonRpcScrapeInterval int
 	balanceAddresses      string
 	balanceRpcUrls        string
+	balanceToken          string
 	balanceScrapeInterval int
 	verifierWorkers       int
 	healthMaxHeaderAge    int
@@ -107,6 +109,7 @@ func NewMonitorCmd() *cobra.Command {
 	cmd.Flags().IntVar(&flags.jsonRpcScrapeInterval, flagJsonRpcScrapeInterval, 10, "JSON-RPC health check scrape interval in seconds (default: 10)")
 	cmd.Flags().StringVar(&flags.balanceAddresses, flagBalanceAddresses, "", "Comma-separated celestia addresses to monitor (enables balance checking)")
 	cmd.Flags().StringVar(&flags.balanceRpcUrls, flagBalanceRpcUrls, "", "Comma-separated consensus rpc urls for balance queries (required if balance.addresses is set)")
+	cmd.Flags().StringVar(&flags.balanceToken, flagBalanceToken, "", "Token sent as x-token gRPC metadata on balance queries to every consensus rpc url (optional, e.g. for DA-proxy)")
 	cmd.Flags().IntVar(&flags.balanceScrapeInterval, flagBalanceScrapeInterval, 30, "Balance check scrape interval in seconds (default: 30)")
 	cmd.Flags().IntVar(&flags.verifierWorkers, flagVerifierWorkers, 50, "Number of concurrent workers for block verification (default: 50)")
 	cmd.Flags().IntVar(&flags.healthMaxHeaderAge, flagHealthMaxHeaderAge, 0, "/health fails when no block header has arrived for this many seconds (0 = disabled, only subscription state is checked)")
@@ -253,6 +256,7 @@ func monitorAndExportMetrics(_ *cobra.Command, _ []string) error {
 			flags.chainID,
 			addressList,
 			rpcUrls,
+			flags.balanceToken,
 			flags.balanceScrapeInterval,
 			logger,
 		))
