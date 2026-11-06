@@ -60,7 +60,7 @@ func (f *fakeDA) GetBlockTimestamp(context.Context, uint64) (time.Time, error) {
 	return time.Now(), nil
 }
 
-func (f *fakeDA) VerifyBlobAtHeight(_ context.Context, _ []byte, daHeight uint64, _ []byte) (bool, error) {
+func (f *fakeDA) VerifyHeaderBlobAtHeight(_ context.Context, _ []byte, daHeight uint64, _ []byte) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.verified = append(f.verified, daHeight-daOffset)

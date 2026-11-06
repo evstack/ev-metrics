@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -163,116 +164,66 @@ func (c *Client) fetchBlobs(ctx context.Context, daHeight uint64, ns libshare.Na
 	return result, nil
 }
 
-// VerifyBlobAtHeight verifies that a specific blob exists at the given DA height
-// by computing its commitment and fetching it directly from Celestia.
-func (c *Client) VerifyBlobAtHeight(ctx context.Context, blob []byte, daHeight uint64, namespace []byte) (bool, error) {
-	if len(blob) == 0 {
-		return true, nil // empty blobs are valid (nothing to verify)
-	}
-
-	ns, err := libshare.NewNamespaceFromBytes(namespace)
-	if err != nil {
-		return false, fmt.Errorf("invalid namespace: %w", err)
-	}
-
-	b, err := jsonrpc.NewBlobV0(ns, blob)
-	if err != nil {
-		return false, fmt.Errorf("failed to create blob for commitment: %w", err)
-	}
-
-	c.logger.Debug().
-		Str("commitment", fmt.Sprintf("%x", b.Commitment)).
-		Int("blob_size", len(blob)).
-		Uint64("da_height", daHeight).
-		Msg("fetching blob by commitment from Celestia")
-
-	result, err := c.Blob.Get(ctx, daHeight, ns, b.Commitment)
-	if err != nil {
-		if strings.Contains(err.Error(), "blob: not found") {
-			c.logger.Debug().Uint64("da_height", daHeight).Msg("blob not found at DA height")
-			return false, nil
+// VerifyHeaderBlobAtHeight verifies a header blob, accounting for the DAHeaderEnvelope
+// wrapper. ev-node submits the signed header plus an envelope signature (field 4) whose
+// bytes cannot be recomputed, so the published blob is matched by its signed-header
+// content instead of by commitment. Legacy blobs without an envelope also match.
+func (c *Client) VerifyHeaderBlobAtHeight(ctx context.Context, signedHeaderBlob []byte, daHeight uint64, namespace []byte) (bool, error) {
+	return c.verifyBlobAtHeight(ctx, "header", signedHeaderBlob, daHeight, namespace, func(blob []byte) ([]byte, error) {
+		var sh evnode.SignedHeader
+		if err := proto.Unmarshal(blob, &sh); err != nil {
+			return nil, err
 		}
-		return false, fmt.Errorf("failed to get blob: %w", err)
-	}
-
-	if result != nil {
-		c.logger.Debug().
-			Str("commitment", fmt.Sprintf("%x", b.Commitment)).
-			Msg("blob verified on Celestia")
-	}
-
-	return result != nil, nil
+		// drop the envelope signature (field 4, unknown to SignedHeader) but keep unknown
+		// fields nested inside the header, which are part of the signed bytes.
+		sh.ProtoReflect().SetUnknown(nil)
+		return proto.Marshal(&sh)
+	})
 }
 
 // VerifyDataBlobAtHeight verifies a data blob, accounting for the SignedData wrapper
 // ev-node submits Data wrapped in SignedData, but the Store API returns unwrapped Data
 func (c *Client) VerifyDataBlobAtHeight(ctx context.Context, unwrappedDataBlob []byte, daHeight uint64, namespace []byte) (bool, error) {
-	if len(unwrappedDataBlob) == 0 {
+	return c.verifyBlobAtHeight(ctx, "data", unwrappedDataBlob, daHeight, namespace, func(blob []byte) ([]byte, error) {
+		var signedData evnode.SignedData
+		if err := proto.Unmarshal(blob, &signedData); err != nil {
+			return nil, err
+		}
+		if signedData.Data == nil {
+			return nil, errors.New("SignedData has nil Data")
+		}
+		return proto.Marshal(signedData.Data)
+	})
+}
+
+// verifyBlobAtHeight reports whether any blob in the namespace at daHeight, reduced
+// by unwrap to the form the Store API returns, equals want.
+func (c *Client) verifyBlobAtHeight(ctx context.Context, kind string, want []byte, daHeight uint64, namespace []byte, unwrap func([]byte) ([]byte, error)) (bool, error) {
+	if len(want) == 0 {
 		return true, nil
 	}
 
-	c.logger.Debug().
-		Int("unwrapped_size", len(unwrappedDataBlob)).
-		Uint64("da_height", daHeight).
-		Msg("verifying data blob (will check wrapped SignedData on Celestia)")
-
-	// get all blobs at the DA height
 	blobs, err := c.GetBlobsAtHeight(ctx, daHeight, namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to get blobs: %w", err)
 	}
 
-	if len(blobs) == 0 {
-		c.logger.Debug().Uint64("da_height", daHeight).Msg("no blobs found")
-		return false, nil
-	}
-
-	// try to unwrap each blob as SignedData and compare the inner Data
 	for i, blob := range blobs {
-		var signedData evnode.SignedData
-		if err := proto.Unmarshal(blob, &signedData); err != nil {
-			c.logger.Debug().
-				Int("blob_index", i).
-				Err(err).
-				Msg("failed to unmarshal as SignedData, skipping")
-			continue
-		}
-
-		if signedData.Data == nil {
-			c.logger.Debug().Int("blob_index", i).Msg("SignedData has nil Data, skipping")
-			continue
-		}
-
-		// marshal the inner Data to compare
-		celestiaData, err := proto.Marshal(signedData.Data)
+		got, err := unwrap(blob)
 		if err != nil {
-			c.logger.Debug().
-				Int("blob_index", i).
-				Err(err).
-				Msg("failed to marshal inner Data")
+			c.logger.Debug().Int("blob_index", i).Str("kind", kind).Err(err).Msg("failed to unwrap blob, skipping")
 			continue
 		}
-
-		equal := bytes.Equal(celestiaData, unwrappedDataBlob)
-
-		c.logger.Debug().
-			Int("blob_index", i).
-			Int("celestia_data_size", len(celestiaData)).
-			Int("evnode_data_size", len(unwrappedDataBlob)).
-			Bool("matches", equal).
-			Msg("comparing unwrapped Data")
-
-		if equal {
-			c.logger.Debug().
-				Int("blob_index", i).
-				Msg("found matching Data")
+		if bytes.Equal(got, want) {
 			return true, nil
 		}
 	}
 
 	c.logger.Warn().
+		Str("kind", kind).
+		Uint64("da_height", daHeight).
 		Int("checked_blobs", len(blobs)).
-		Msg("no matching Data found in any SignedData wrapper")
+		Msg("no matching blob found")
 	return false, nil
 }
 
