@@ -74,6 +74,7 @@ Metrics will be available at `http://localhost:2112/metrics`
 - `--polling-interval`: Polling interval in seconds for checking node block heights (default: 10)
 - `--balance.addresses`: Comma-separated Celestia addresses to monitor (enables balance checking)
 - `--balance.consensus-rpc-urls`: Comma-separated consensus RPC URLs for balance queries (required if balance.addresses is set)
+- `--balance.token`: Token sent as `x-token` gRPC metadata on every balance query, to every URL in `--balance.consensus-rpc-urls` (optional). Required by DA-proxy gRPC endpoints. Separate from `--celestia-token` so the DA token is not sent to third-party consensus nodes; set both from the same secret if they share it.
 - `--balance.scrape-interval`: Balance check scrape interval in seconds (default: 30)
 - `--verifier.workers`: Number of concurrent workers for block verification (default: 50)
 - `--health-max-header-age`: Seconds without a new block header after which `/health` returns 503 (default: 0, which disables the age check so only the subscription state matters). See [Health Endpoint](#health-endpoint).
@@ -122,6 +123,13 @@ Monitor native token balances for one or more Celestia addresses:
 This will query account balances every 30 seconds with automatic failover between RPC endpoints.
 
 `https://` consensus endpoints are dialed over TLS (port 443 if none is given); `http://` and bare `host:port` endpoints use plaintext gRPC.
+
+For an authenticated DA-proxy endpoint, pass its token with `--balance.token`:
+
+```bash
+  --balance.consensus-rpc-urls "https://grpc.da-proxy-lb.celestia-mocha.com:443" \
+  --balance.token "$DA_PROXY_TOKEN"
+```
 
 ## Prometheus Metrics
 

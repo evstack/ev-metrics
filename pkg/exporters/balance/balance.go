@@ -20,6 +20,7 @@ func NewMetricsExporter(
 	chainID string,
 	addresses []string,
 	endpoints []string,
+	token string,
 	scrapeInterval int,
 	logger zerolog.Logger,
 ) metrics.Exporter {
@@ -27,6 +28,7 @@ func NewMetricsExporter(
 		chainID:        chainID,
 		addresses:      addresses,
 		endpoints:      endpoints,
+		token:          token,
 		labels:         utils.RedactEndpoints(endpoints),
 		scrapeInterval: scrapeInterval,
 		rpcTimeout:     defaultRPCTimeout,
@@ -40,6 +42,7 @@ type exporter struct {
 	addresses      []string
 	endpoints      []string
 	labels         []string
+	token          string
 	scrapeInterval int
 	rpcTimeout     time.Duration
 	logger         zerolog.Logger
@@ -86,7 +89,7 @@ func (e *exporter) checkBalance(ctx context.Context, m *metrics.Metrics, clients
 	for i, endpoint := range e.endpoints {
 		label := e.labels[i]
 		if clients[i] == nil {
-			client, err := cosmos.NewClient(endpoint, e.logger)
+			client, err := cosmos.NewClient(endpoint, e.token, e.logger)
 			if err != nil {
 				e.logger.Warn().
 					Err(utils.RedactError(err, endpoint)).
